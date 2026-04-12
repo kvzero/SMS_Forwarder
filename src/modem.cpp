@@ -1,0 +1,625 @@
+/**
+ * @file modem.cpp
+ * @brief Modem bring-up, AT command flow, and SMS receive pipeline.
+ */
+
+#include "modem.h"
+
+namespace {
+
+void FillSmsMessage(SmsMessage& message, const String& sender, const String& text,
+                    const String& timestamp) {
+  message.sender = sender;
+  message.text = text;
+  message.timestamp = timestamp;
+}
+
+}  // namespace
+
+// Startup and modem session ownership.
+Modem::Modem(HardwareSerial& serial_port)
+    : serial_(serial_port), pdu_(4096), urc_state_(UrcState::Idle), line_pos_(0) {
+  line_buffer_[0] = 0;
+  InitConcatBuffer();
+}
+
+void Modem::Begin() {
+  serial_.begin(115200, SERIAL_8N1, kModemRxPin, kModemTxPin);
+  serial_.setRxBufferSize(kSerialBufferSize);
+
+  while (serial_.available()) {
+    serial_.read();
+  }
+  ModemPowerCycle();
+  while (serial_.available()) {
+    serial_.read();
+  }
+
+  InitConcatBuffer();
+
+  while (!SendAtAndWaitOK("AT", 1000)) {
+    Serial.println("AT did not respond; retrying...");
+    BlinkShort();
+  }
+  Serial.println("Modem AT handshake is ready");
+
+  while (!SendAtAndWaitOK("AT+CGACT=0,1", 5000)) {
+    Serial.println("Failed to disable the data connection; retrying...");
+    BlinkShort();
+  }
+  Serial.println("Data connection disabled with AT+CGACT=0,1 to avoid traffic usage");
+
+  while (!SendAtAndWaitOK("AT+CNMI=2,2,0,0,0", 1000)) {
+    Serial.println("Failed to configure CNMI; retrying...");
+    BlinkShort();
+  }
+  Serial.println("CNMI configuration applied");
+
+  while (!SendAtAndWaitOK("AT+CMGF=0", 1000)) {
+    Serial.println("Failed to switch to PDU mode; retrying...");
+    BlinkShort();
+  }
+  Serial.println("PDU mode enabled");
+
+  while (!WaitCereg()) {
+    Serial.println("Waiting for network registration...");
+    BlinkShort();
+  }
+  Serial.println("Network registration completed");
+}
+
+// Incoming SMS pipeline.
+bool Modem::Poll(SmsMessage& message) {
+  // Emit timed-out long SMS groups through the same path as live URCs.
+  if (CheckConcatTimeout(message)) {
+    return true;
+  }
+
+  const String line = ReadSerialLine();
+  if (line.length() == 0) {
+    return false;
+  }
+
+  Serial.println("Debug> " + line);
+
+  if (urc_state_ == UrcState::Idle) {
+    if (line.startsWith("+CMT:")) {
+      Serial.println("Detected +CMT; waiting for PDU data...");
+      urc_state_ = UrcState::WaitPdu;
+    }
+    return false;
+  }
+
+  if (!IsHexString(line)) {
+    Serial.println("Received non-PDU data while waiting for PDU; returning to IDLE");
+    urc_state_ = UrcState::Idle;
+    return false;
+  }
+
+  Serial.println("Received PDU data: " + line);
+  Serial.println("PDU length: " + String(line.length()) + " chars");
+
+  bool has_message = false;
+  if (!pdu_.decodePDU(line.c_str())) {
+    Serial.println("PDU decode failed");
+  } else {
+    Serial.println("PDU decode succeeded");
+    Serial.println("=== SMS payload ===");
+    Serial.println("Sender: " + String(pdu_.getSender()));
+    Serial.println("Timestamp: " + String(pdu_.getTimeStamp()));
+    Serial.println("Message: " + String(pdu_.getText()));
+
+    int* concat_info = pdu_.getConcatInfo();
+    const int ref_number = concat_info[0];
+    const int part_number = concat_info[1];
+    const int total_parts = concat_info[2];
+
+    Serial.printf("Long SMS info: ref=%d, part=%d, total=%d\n", ref_number, part_number,
+                  total_parts);
+    Serial.println("===================");
+
+    if (total_parts > 1 && part_number > 0) {
+      Serial.printf("Received long SMS segment %d/%d\n", part_number, total_parts);
+
+      const int slot = FindOrCreateConcatSlot(ref_number, pdu_.getSender(), total_parts);
+      const int part_index = part_number - 1;
+      if (part_index >= 0 && part_index < kMaxConcatParts) {
+        if (!concat_buffer_[slot].parts[part_index].valid) {
+          concat_buffer_[slot].parts[part_index].valid = true;
+          concat_buffer_[slot].parts[part_index].text = String(pdu_.getText());
+          concat_buffer_[slot].receivedParts++;
+
+          if (concat_buffer_[slot].receivedParts == 1) {
+            concat_buffer_[slot].timestamp = String(pdu_.getTimeStamp());
+          }
+
+          Serial.printf("  Cached segment %d; now have %d/%d\n", part_number,
+                        concat_buffer_[slot].receivedParts, total_parts);
+        } else {
+          Serial.printf("  Segment %d already exists; skipping duplicate\n", part_number);
+        }
+      }
+
+      if (concat_buffer_[slot].receivedParts >= total_parts) {
+        Serial.println("Long SMS is complete; assembling and forwarding");
+        FillSmsMessage(message, concat_buffer_[slot].sender, AssembleConcatSms(slot),
+                       concat_buffer_[slot].timestamp);
+        ClearConcatSlot(slot);
+        has_message = true;
+      }
+    } else {
+      FillSmsMessage(message, String(pdu_.getSender()), String(pdu_.getText()),
+                     String(pdu_.getTimeStamp()));
+      has_message = true;
+    }
+  }
+
+  urc_state_ = UrcState::Idle;
+  return has_message;
+}
+
+// Outbound commands and diagnostics.
+bool Modem::SendSms(const char* phone_number, const char* message) {
+  Serial.println("Preparing to send SMS...");
+  Serial.print("Target phone: ");
+  Serial.println(phone_number);
+  Serial.print("SMS content: ");
+  Serial.println(message);
+
+  pdu_.setSCAnumber();
+  const int pdu_len = pdu_.encodePDU(phone_number, message);
+  if (pdu_len < 0) {
+    Serial.print("PDU encode failed, error code: ");
+    Serial.println(pdu_len);
+    return false;
+  }
+
+  Serial.print("PDU data: ");
+  Serial.println(pdu_.getSMS());
+  Serial.print("PDU length: ");
+  Serial.println(pdu_len);
+
+  String cmgs_cmd = "AT+CMGS=";
+  cmgs_cmd += pdu_len;
+
+  while (serial_.available()) {
+    serial_.read();
+  }
+  serial_.println(cmgs_cmd);
+
+  unsigned long start = millis();
+  bool got_prompt = false;
+  while (millis() - start < 5000) {
+    if (serial_.available()) {
+      const char c = serial_.read();
+      Serial.print(c);
+      if (c == '>') {
+        got_prompt = true;
+        break;
+      }
+    }
+  }
+
+  if (!got_prompt) {
+    Serial.println("Did not receive the '>' prompt");
+    return false;
+  }
+
+  serial_.print(pdu_.getSMS());
+  serial_.write(0x1A);
+
+  start = millis();
+  String response;
+  while (millis() - start < 30000) {
+    while (serial_.available()) {
+      const char c = serial_.read();
+      response += c;
+      Serial.print(c);
+      if (response.indexOf("OK") >= 0) {
+        Serial.println("\nSMS sent successfully");
+        return true;
+      }
+      if (response.indexOf("ERROR") >= 0) {
+        Serial.println("\nSMS send failed");
+        return false;
+      }
+    }
+  }
+
+  Serial.println("SMS send timed out");
+  return false;
+}
+
+String Modem::SendAtCommand(const char* cmd, unsigned long timeout) {
+  while (serial_.available()) {
+    serial_.read();
+  }
+  serial_.println(cmd);
+
+  const unsigned long start = millis();
+  String response;
+  while (millis() - start < timeout) {
+    while (serial_.available()) {
+      response += static_cast<char>(serial_.read());
+      if (response.indexOf("OK") >= 0 || response.indexOf("ERROR") >= 0) {
+        delay(50);
+        while (serial_.available()) {
+          response += static_cast<char>(serial_.read());
+        }
+        return response;
+      }
+    }
+  }
+  return response;
+}
+
+ModemPingResult Modem::Ping() {
+  ModemPingResult result;
+
+  Serial.println("Starting modem ping request");
+  while (serial_.available()) {
+    serial_.read();
+  }
+
+  Serial.println("Activating data connection (CGACT)...");
+  const String activate_response = SendAtCommand("AT+CGACT=1,1", 10000);
+  Serial.println("CGACT response: " + activate_response);
+  if (activate_response.indexOf("OK") < 0) {
+    Serial.println("Data connection activation failed; trying to continue anyway...");
+  }
+
+  while (serial_.available()) {
+    serial_.read();
+  }
+  delay(500);
+  serial_.println("AT+MPING=\"8.8.8.8\",30,1");
+
+  const unsigned long start = millis();
+  String response;
+  bool got_error = false;
+  bool got_ping_result = false;
+  bool ping_success = false;
+
+  while (millis() - start < 35000) {
+    while (serial_.available()) {
+      const char c = serial_.read();
+      response += c;
+      Serial.print(c);
+
+      if (response.indexOf("+CME ERROR") >= 0 || response.indexOf("ERROR") >= 0) {
+        got_error = true;
+        result.message = "模组返回错误";
+        break;
+      }
+
+      const int mping_index = response.indexOf("+MPING:");
+      if (mping_index >= 0) {
+        const int line_end = response.indexOf('\n', mping_index);
+        if (line_end >= 0) {
+          String mping_line = response.substring(mping_index, line_end);
+          mping_line.trim();
+          Serial.println("Received MPING result: " + mping_line);
+
+          const int colon_index = mping_line.indexOf(':');
+          if (colon_index >= 0) {
+            String params = mping_line.substring(colon_index + 1);
+            params.trim();
+
+            const int comma_index = params.indexOf(',');
+            String result_str =
+                comma_index >= 0 ? params.substring(0, comma_index) : params;
+            result_str.trim();
+            const int ping_result = result_str.toInt();
+
+            got_ping_result = true;
+            // Firmware variants may report success as result=0, result=1, or as
+            // a populated +MPING payload with the timing fields present.
+            ping_success = (ping_result == 0 || ping_result == 1) ||
+                           (params.indexOf(',') >= 0 && params.length() > 5);
+
+            if (ping_success) {
+              int idx1 = params.indexOf(',');
+              if (idx1 >= 0) {
+                String rest = params.substring(idx1 + 1);
+                String ip;
+                int idx2 = -1;
+                if (rest.startsWith("\"")) {
+                  const int quote_end = rest.indexOf('"', 1);
+                  if (quote_end >= 0) {
+                    ip = rest.substring(1, quote_end);
+                    idx2 = rest.indexOf(',', quote_end);
+                  } else {
+                    idx2 = rest.indexOf(',');
+                    ip = rest.substring(0, idx2);
+                  }
+                } else {
+                  idx2 = rest.indexOf(',');
+                  ip = rest.substring(0, idx2);
+                }
+
+                if (idx2 >= 0) {
+                  rest = rest.substring(idx2 + 1);
+                  const int idx3 = rest.indexOf(',');
+                  if (idx3 >= 0) {
+                    rest = rest.substring(idx3 + 1);
+                    const int idx4 = rest.indexOf(',');
+                    String time_str;
+                    String ttl_str;
+                    if (idx4 >= 0) {
+                      time_str = rest.substring(0, idx4);
+                      ttl_str = rest.substring(idx4 + 1);
+                    } else {
+                      time_str = rest;
+                      ttl_str = "N/A";
+                    }
+                    time_str.trim();
+                    ttl_str.trim();
+                    result.message = "目标: " + ip + ", 延迟: " + time_str +
+                                     "ms, TTL: " + ttl_str;
+                  }
+                }
+              }
+
+              if (result.message.length() == 0) {
+                result.message = "Ping成功";
+              }
+            } else {
+              result.message =
+                  "Ping超时或目标不可达 (错误码: " + String(ping_result) + ")";
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    if (got_error || got_ping_result) {
+      break;
+    }
+    delay(10);
+  }
+
+  Serial.println("\nPing operation completed");
+  Serial.println("Deactivating PDP context (CGACT=0)...");
+  const String deactivate_response = SendAtCommand("AT+CGACT=0,1", 5000);
+  Serial.println("CGACT close response: " + deactivate_response);
+
+  result.success = got_ping_result && ping_success;
+  if (!got_ping_result && !got_error) {
+    result.message = "操作超时，未收到Ping结果";
+  }
+
+  return result;
+}
+
+void Modem::Reset() {
+  Serial.println("Hard resetting the modem by toggling EN...");
+  ModemPowerCycle();
+
+  while (serial_.available()) {
+    serial_.read();
+  }
+
+  bool ok = false;
+  for (int i = 0; i < 10; ++i) {
+    if (SendAtAndWaitOK("AT", 1000)) {
+      ok = true;
+      break;
+    }
+    Serial.println("AT is still not responding; waiting for the modem to boot...");
+  }
+
+  if (ok) {
+    Serial.println("Modem AT handshake recovered");
+  } else {
+    Serial.println("Modem AT is still unavailable; check EN wiring, power, and baud rate");
+  }
+}
+
+// Low-level serial helpers.
+void Modem::WritePassthroughByte(uint8_t byte) {
+  serial_.write(byte);
+}
+
+void Modem::BlinkShort(unsigned long gap_time) {
+  digitalWrite(LED_BUILTIN, LOW);
+  delay(50);
+  digitalWrite(LED_BUILTIN, HIGH);
+  delay(gap_time);
+}
+
+bool Modem::SendAtAndWaitOK(const char* cmd, unsigned long timeout) {
+  while (serial_.available()) {
+    serial_.read();
+  }
+  serial_.println(cmd);
+
+  const unsigned long start = millis();
+  String response;
+  while (millis() - start < timeout) {
+    while (serial_.available()) {
+      response += static_cast<char>(serial_.read());
+      if (response.indexOf("OK") >= 0) {
+        return true;
+      }
+      if (response.indexOf("ERROR") >= 0) {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+bool Modem::WaitCereg() {
+  serial_.println("AT+CEREG?");
+  const unsigned long start = millis();
+  String response;
+  while (millis() - start < 2000) {
+    while (serial_.available()) {
+      response += static_cast<char>(serial_.read());
+      if (response.indexOf("+CEREG:") >= 0) {
+        if (response.indexOf(",1") >= 0 || response.indexOf(",5") >= 0) {
+          return true;
+        }
+        if (response.indexOf(",0") >= 0 || response.indexOf(",2") >= 0 ||
+            response.indexOf(",3") >= 0 || response.indexOf(",4") >= 0) {
+          return false;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+void Modem::ModemPowerCycle() {
+  pinMode(kModemEnablePin, OUTPUT);
+
+  Serial.println("Pulling EN low to power off the modem");
+  digitalWrite(kModemEnablePin, LOW);
+  delay(1200);
+
+  Serial.println("Pulling EN high to power on the modem");
+  digitalWrite(kModemEnablePin, HIGH);
+  delay(6000);
+}
+
+// Long-SMS assembly state.
+void Modem::InitConcatBuffer() {
+  for (int i = 0; i < kMaxConcatMessages; ++i) {
+    concat_buffer_[i].inUse = false;
+    concat_buffer_[i].receivedParts = 0;
+    concat_buffer_[i].timestamp = "";
+    for (int j = 0; j < kMaxConcatParts; ++j) {
+      concat_buffer_[i].parts[j].valid = false;
+      concat_buffer_[i].parts[j].text = "";
+    }
+  }
+}
+
+int Modem::FindOrCreateConcatSlot(int ref_number, const char* sender, int total_parts) {
+  for (int i = 0; i < kMaxConcatMessages; ++i) {
+    if (concat_buffer_[i].inUse && concat_buffer_[i].refNumber == ref_number &&
+        concat_buffer_[i].sender.equals(sender)) {
+      return i;
+    }
+  }
+
+  for (int i = 0; i < kMaxConcatMessages; ++i) {
+    if (!concat_buffer_[i].inUse) {
+      concat_buffer_[i].inUse = true;
+      concat_buffer_[i].refNumber = ref_number;
+      concat_buffer_[i].sender = String(sender);
+      concat_buffer_[i].totalParts = total_parts;
+      concat_buffer_[i].receivedParts = 0;
+      concat_buffer_[i].firstPartTime = millis();
+      concat_buffer_[i].timestamp = "";
+      for (int j = 0; j < kMaxConcatParts; ++j) {
+        concat_buffer_[i].parts[j].valid = false;
+        concat_buffer_[i].parts[j].text = "";
+      }
+      return i;
+    }
+  }
+
+  int oldest_slot = 0;
+  unsigned long oldest_time = concat_buffer_[0].firstPartTime;
+  for (int i = 1; i < kMaxConcatMessages; ++i) {
+    if (concat_buffer_[i].firstPartTime < oldest_time) {
+      oldest_time = concat_buffer_[i].firstPartTime;
+      oldest_slot = i;
+    }
+  }
+
+  Serial.println("Long SMS cache is full; reusing the oldest slot");
+  concat_buffer_[oldest_slot].inUse = true;
+  concat_buffer_[oldest_slot].refNumber = ref_number;
+  concat_buffer_[oldest_slot].sender = String(sender);
+  concat_buffer_[oldest_slot].totalParts = total_parts;
+  concat_buffer_[oldest_slot].receivedParts = 0;
+  concat_buffer_[oldest_slot].firstPartTime = millis();
+  concat_buffer_[oldest_slot].timestamp = "";
+  for (int j = 0; j < kMaxConcatParts; ++j) {
+    concat_buffer_[oldest_slot].parts[j].valid = false;
+    concat_buffer_[oldest_slot].parts[j].text = "";
+  }
+  return oldest_slot;
+}
+
+String Modem::AssembleConcatSms(int slot) const {
+  String result;
+  for (int i = 0; i < concat_buffer_[slot].totalParts; ++i) {
+    if (concat_buffer_[slot].parts[i].valid) {
+      result += concat_buffer_[slot].parts[i].text;
+    } else {
+      result += "[缺失分段" + String(i + 1) + "]";
+    }
+  }
+  return result;
+}
+
+void Modem::ClearConcatSlot(int slot) {
+  concat_buffer_[slot].inUse = false;
+  concat_buffer_[slot].receivedParts = 0;
+  concat_buffer_[slot].sender = "";
+  concat_buffer_[slot].timestamp = "";
+  for (int j = 0; j < kMaxConcatParts; ++j) {
+    concat_buffer_[slot].parts[j].valid = false;
+    concat_buffer_[slot].parts[j].text = "";
+  }
+}
+
+bool Modem::CheckConcatTimeout(SmsMessage& message) {
+  const unsigned long now = millis();
+  for (int i = 0; i < kMaxConcatMessages; ++i) {
+    if (concat_buffer_[i].inUse &&
+        now - concat_buffer_[i].firstPartTime >= kConcatTimeoutMs) {
+      // Keep the outer loop on a one-message-at-a-time processing model.
+      Serial.println("Long SMS timed out; forwarding the partial message");
+      Serial.printf("  Ref: %d, received: %d/%d\n", concat_buffer_[i].refNumber,
+                    concat_buffer_[i].receivedParts, concat_buffer_[i].totalParts);
+
+      FillSmsMessage(message, concat_buffer_[i].sender, AssembleConcatSms(i),
+                     concat_buffer_[i].timestamp);
+      ClearConcatSlot(i);
+      return true;
+    }
+  }
+  return false;
+}
+
+String Modem::ReadSerialLine() {
+  while (serial_.available()) {
+    const char c = serial_.read();
+    if (c == '\n') {
+      line_buffer_[line_pos_] = 0;
+      const String result = String(line_buffer_);
+      line_pos_ = 0;
+      return result;
+    }
+
+    if (c != '\r') {
+      if (line_pos_ < static_cast<int>(kSerialBufferSize) - 1) {
+        line_buffer_[line_pos_++] = c;
+      } else {
+        line_pos_ = 0;
+      }
+    }
+  }
+
+  return "";
+}
+
+bool Modem::IsHexString(const String& value) const {
+  if (value.length() == 0) {
+    return false;
+  }
+
+  for (unsigned int i = 0; i < value.length(); ++i) {
+    const char c = value.charAt(i);
+    if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') ||
+          (c >= 'a' && c <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
