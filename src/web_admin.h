@@ -6,24 +6,26 @@
 #pragma once
 
 #include <WebServer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 
 #include "config_store.h"
-#include "modem.h"
-#include "notifier.h"
+#include "task_protocol.h"
 
 /** @brief Embedded HTTP admin interface for configuration and modem tools. */
 class WebAdmin {
  public:
   /**
-   * @brief Creates the admin web controller around the long-lived app owners.
+   * @brief Creates the admin web controller around the long-lived task owners.
    * @param config_store Configuration persistence owner.
-   * @param config Mutable runtime configuration.
-   * @param modem Modem owner used by tools and queries.
-   * @param notifier Notification owner used for update emails.
-   * @param config_valid Shared flag indicating whether delivery settings exist.
+   * @param shared_state Shared runtime configuration guarded by a mutex.
+   * @param modem_request_queue Queue used to submit modem work.
+   * @param web_response_queue Queue used to receive modem results for web calls.
+   * @param app_event_queue Queue used to notify the app task about config updates.
    */
-  WebAdmin(ConfigStore& config_store, AppConfig& config, Modem& modem,
-           Notifier& notifier, bool& config_valid);
+  WebAdmin(ConfigStore& config_store, SharedConfigState& shared_state,
+           QueueHandle_t modem_request_queue, QueueHandle_t web_response_queue,
+           QueueHandle_t app_event_queue);
 
   /** @brief Registers routes and starts the HTTP server. */
   void Begin();
@@ -31,7 +33,30 @@ class WebAdmin {
   void HandleClient();
 
  private:
+  struct PendingWebRequest {
+    bool inUse = false;
+    bool completed = false;
+    uint32_t requestId = 0;
+    bool success = false;
+    unsigned long createdAtMs = 0;
+    String message;
+  };
+
+  bool LoadConfigSnapshot(AppConfig& config, bool* config_valid = nullptr) const;
   bool CheckAuth();
+  bool SubmitModemRequest(const ModemRequest& request,
+                          TickType_t timeout_ticks = pdMS_TO_TICKS(100));
+  bool WaitForModemResponse(uint32_t request_id, ModemResponse& response,
+                            TickType_t timeout_ticks);
+  bool RequestAtCommand(const String& cmd, unsigned long timeout_ms, String& response);
+  bool RequestSendSms(const String& phone, const String& content);
+  uint32_t StartAsyncAtCommand(const String& cmd, unsigned long timeout_ms);
+  uint32_t StartAsyncPing();
+  uint32_t AllocateRequestId();
+  void DrainModemResponses();
+  void StorePendingResponse(const ModemResponse& response);
+  PendingWebRequest* FindPendingRequest(uint32_t request_id);
+  void CleanupPendingRequests();
   String GetDeviceUrl() const;
   String EscapeJson(const String& value) const;
 
@@ -43,11 +68,14 @@ class WebAdmin {
   void HandleSendSms();
   void HandlePing();
   void HandleSave();
+  void HandleModemResult();
 
   ConfigStore& config_store_;
-  AppConfig& config_;
-  Modem& modem_;
-  Notifier& notifier_;
-  bool& config_valid_;
+  SharedConfigState& shared_state_;
+  QueueHandle_t modem_request_queue_;
+  QueueHandle_t web_response_queue_;
+  QueueHandle_t app_event_queue_;
+  uint32_t next_request_id_;
+  PendingWebRequest pending_requests_[8];
   WebServer server_;
 };

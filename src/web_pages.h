@@ -348,6 +348,28 @@ static const char kToolsPageHtml[] = R"rawliteral(
         });
     }
 
+    function pollModemResult(requestId, onReady, onError, attempt = 0) {
+      if (attempt > 80) {
+        onError('请求超时。');
+        return;
+      }
+
+      fetch('/modem_result?id=' + requestId)
+        .then(response => response.json())
+        .then(data => {
+          if (data.ready) {
+            onReady(data);
+            return;
+          }
+
+          setTimeout(function() {
+            pollModemResult(requestId, onReady, onError, attempt + 1);
+          }, 500);
+        })
+        .catch(error => {
+          onError(error);
+        });
+    }
     function confirmPing() {
       if (confirm("确定要执行 Ping 操作吗？\n\n这将消耗少量流量。")) {
         doPing();
@@ -362,20 +384,36 @@ static const char kToolsPageHtml[] = R"rawliteral(
       btn.textContent = '⏳ 正在 Ping...';
       result.className = 'result-box result-loading';
       result.style.display = 'block';
-      result.textContent = '正在执行 Ping 操作，请稍候（最长等待30秒）...';
+      result.textContent = '正在提交 Ping 请求，请稍候...';
       
       fetch('/ping', { method: 'POST' })
         .then(response => response.json())
         .then(data => {
-          btn.disabled = false;
-          btn.textContent = '📡 点我消耗一点流量';
-          if (data.success) {
-            result.className = 'result-box result-success';
-            result.innerHTML = '✅ Ping 成功！<br>' + data.message;
-          } else {
-            result.className = 'result-box result-error';
-            result.innerHTML = '❌ Ping 失败<br>' + data.message;
+          if (!data.accepted) {
+            throw new Error(data.message || '提交 Ping 请求失败。');
           }
+
+          result.textContent = '正在执行 Ping 操作，请稍候（最长等待30秒）...';
+          pollModemResult(
+            data.requestId,
+            function(job) {
+              btn.disabled = false;
+              btn.textContent = '📡 点我消耗一点流量';
+              if (job.success) {
+                result.className = 'result-box result-success';
+                result.innerHTML = '✅ Ping 成功！<br>' + job.message;
+              } else {
+                result.className = 'result-box result-error';
+                result.innerHTML = '❌ Ping 失败<br>' + job.message;
+              }
+            },
+            function(error) {
+              btn.disabled = false;
+              btn.textContent = '📡 点我消耗一点流量';
+              result.className = 'result-box result-error';
+              result.textContent = '❌ 请求失败: ' + error;
+            }
+          );
         })
         .catch(error => {
           btn.disabled = false;
@@ -384,7 +422,7 @@ static const char kToolsPageHtml[] = R"rawliteral(
           result.textContent = '❌ 请求失败: ' + error;
         });
     }
-    
+
     function queryFlightMode() {
       var result = document.getElementById('flightResult');
       result.className = 'result-box result-loading';
@@ -476,11 +514,23 @@ static const char kToolsPageHtml[] = R"rawliteral(
       fetch('/at?cmd=' + encodeURIComponent(cmd))
         .then(response => response.json())
         .then(data => {
-          if (data.success) {
-            addLog(data.message);
-          } else {
-            addLog(data.message, 'error');
+          if (!data.accepted) {
+            throw new Error(data.message || '提交 AT 指令失败。');
           }
+
+          pollModemResult(
+            data.requestId,
+            function(job) {
+              if (job.success) {
+                addLog(job.message);
+              } else {
+                addLog(job.message, 'error');
+              }
+            },
+            function(error) {
+              addLog('网络错误: ' + error, 'error');
+            }
+          );
         })
         .catch(error => {
           addLog('网络错误: ' + error, 'error');

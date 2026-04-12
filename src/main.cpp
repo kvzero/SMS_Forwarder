@@ -1,31 +1,44 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
 
 #include "board_pins.h"
 #include "config_store.h"
 #include "modem.h"
 #include "notifier.h"
 #include "sms_inbox.h"
+#include "task_protocol.h"
 #include "web_admin.h"
 #include "wifi_config.h"
 
 /**
  * @file main.cpp
- * @brief Top-level application composition and blocking loop orchestration.
+ * @brief Top-level task wiring for the Modem, App, and Web owners.
  */
 
 namespace {
 
-// Top-level composition root for the long-lived application modules.
+constexpr uint32_t kStartupDelayMs = 1500;
+constexpr uint32_t kLoopSleepMs = 100;
+constexpr uint32_t kTaskIdleDelayMs = 10;
+constexpr uint32_t kSendSmsWaitMs = 40000;
+constexpr uint32_t kModemTaskStackBytes = 8192;
+constexpr uint32_t kAppTaskStackBytes = 12288;
+constexpr uint32_t kWebTaskStackBytes = 12288;
+constexpr UBaseType_t kModemQueueDepth = 8;
+constexpr UBaseType_t kWebResponseQueueDepth = 8;
+constexpr UBaseType_t kAppResponseQueueDepth = 4;
+constexpr UBaseType_t kAppEventQueueDepth = 16;
+
 ConfigStore config_store;
-AppConfig config;
-Modem modem(Serial1);
-SmsInbox sms_inbox;
-Notifier notifier;
-bool config_valid = false;
-bool time_synced = false;
-unsigned long last_print_time = 0;
-WebAdmin web_admin(config_store, config, modem, notifier, config_valid);
+SharedConfigState shared_state;
+QueueHandle_t modem_request_queue = nullptr;
+QueueHandle_t web_modem_response_queue = nullptr;
+QueueHandle_t app_modem_response_queue = nullptr;
+QueueHandle_t app_event_queue = nullptr;
 
 void BlinkShort(unsigned long gap_time = 500) {
   digitalWrite(LED_BUILTIN, LOW);
@@ -38,8 +51,108 @@ String GetDeviceUrl() {
   return "http://" + WiFi.localIP().toString() + "/";
 }
 
-void HandleInboxAction(const InboxAction& action) {
-  // SmsInbox decides which action is needed; main.cpp performs the side effects.
+bool LoadConfigSnapshot(AppConfig& config, bool* config_valid = nullptr) {
+  if (shared_state.mutex == nullptr) {
+    return false;
+  }
+
+  if (xSemaphoreTake(shared_state.mutex, portMAX_DELAY) != pdTRUE) {
+    return false;
+  }
+
+  config = shared_state.config;
+  if (config_valid != nullptr) {
+    *config_valid = shared_state.configValid;
+  }
+  xSemaphoreGive(shared_state.mutex);
+  return true;
+}
+
+bool SubmitModemRequest(const ModemRequest& request,
+                        TickType_t timeout_ticks = pdMS_TO_TICKS(100)) {
+  if (modem_request_queue == nullptr) {
+    return false;
+  }
+
+  return xQueueSend(modem_request_queue, &request, timeout_ticks) == pdTRUE;
+}
+
+bool WaitForAppModemResponse(uint32_t request_id, ModemResponse& response,
+                             TickType_t timeout_ticks) {
+  const TickType_t deadline = xTaskGetTickCount() + timeout_ticks;
+  while (xTaskGetTickCount() < deadline) {
+    const TickType_t now = xTaskGetTickCount();
+    const TickType_t wait_time = (deadline - now) > pdMS_TO_TICKS(50)
+                                     ? pdMS_TO_TICKS(50)
+                                     : (deadline - now);
+
+    if (xQueueReceive(app_modem_response_queue, &response, wait_time) != pdTRUE) {
+      continue;
+    }
+
+    if (response.requestId == request_id) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void CopySmsEnvelope(SmsEnvelope& envelope, const SmsMessage& message) {
+  CopyString(envelope.sender, message.sender);
+  CopyString(envelope.text, message.text);
+  CopyString(envelope.timestamp, message.timestamp);
+}
+
+SmsMessage ToSmsMessage(const SmsEnvelope& envelope) {
+  SmsMessage message;
+  message.sender = envelope.sender;
+  message.text = envelope.text;
+  message.timestamp = envelope.timestamp;
+  return message;
+}
+
+bool QueueAppEvent(const AppEvent& event,
+                   TickType_t timeout_ticks = pdMS_TO_TICKS(100)) {
+  if (app_event_queue == nullptr) {
+    return false;
+  }
+
+  return xQueueSend(app_event_queue, &event, timeout_ticks) == pdTRUE;
+}
+
+void SendStartupNotice(Notifier& notifier) {
+  AppConfig config;
+  bool config_valid = false;
+  if (!LoadConfigSnapshot(config, &config_valid) || !config_valid) {
+    return;
+  }
+
+  const String subject = "SMS Forwarder started";
+  const String body = "Device is online.\nURL: " + GetDeviceUrl();
+  notifier.SendEmail(config, subject.c_str(), body.c_str());
+}
+
+void SendConfigUpdatedNotice(Notifier& notifier) {
+  AppConfig config;
+  bool config_valid = false;
+  if (!LoadConfigSnapshot(config, &config_valid) || !config_valid) {
+    return;
+  }
+
+  const String subject = "SMS Forwarder configuration updated";
+  const String body = "Configuration has been saved.\nURL: " + GetDeviceUrl();
+  notifier.SendEmail(config, subject.c_str(), body.c_str());
+}
+
+void HandleInboxAction(const InboxAction& action, Notifier& notifier,
+                       uint32_t& next_request_id) {
+  AppConfig config;
+  if (!LoadConfigSnapshot(config, nullptr)) {
+    Serial.println("Failed to load the shared configuration snapshot");
+    return;
+  }
+
   switch (action.type) {
     case InboxActionType::Ignore:
       return;
@@ -53,35 +166,197 @@ void HandleInboxAction(const InboxAction& action) {
       return;
 
     case InboxActionType::SendSmsCommand: {
-      const bool success =
-          modem.SendSms(action.commandPhone.c_str(), action.commandText.c_str());
+      ModemRequest request;
+      request.requestId = next_request_id++;
+      request.requester = ModemRequester::App;
+      request.type = ModemRequestType::SendSms;
+      CopyString(request.phone, action.commandPhone);
+      CopyString(request.text, action.commandText);
 
-      String subject = success ? "短信发送成功" : "短信发送失败";
-      String body = "管理员命令执行结果:\n";
-      body += "命令: SMS:";
+      bool success = false;
+      if (SubmitModemRequest(request, pdMS_TO_TICKS(1000))) {
+        ModemResponse response;
+        success = WaitForAppModemResponse(request.requestId, response,
+                                          pdMS_TO_TICKS(kSendSmsWaitMs)) &&
+                  response.success;
+      }
+
+      String subject = success ? "Admin SMS command succeeded"
+                               : "Admin SMS command failed";
+      String body = "Command: SMS:";
       body += action.commandPhone;
       body += ":";
       body += action.commandText;
-      body += "\n";
-      body += "目标号码: ";
+      body += "\nTarget: ";
       body += action.commandPhone;
-      body += "\n";
-      body += "短信内容: ";
+      body += "\nMessage: ";
       body += action.commandText;
-      body += "\n";
-      body += "执行结果: ";
-      body += success ? "成功" : "失败";
+      body += "\nResult: ";
+      body += success ? "Success" : "Failed";
       notifier.SendEmail(config, subject.c_str(), body.c_str());
       return;
     }
 
-    case InboxActionType::ResetDevice:
+    case InboxActionType::ResetDevice: {
       notifier.SendEmail(config, action.emailSubject.c_str(), action.emailBody.c_str());
-      modem.Reset();
+
+      ModemRequest request;
+      request.requestId = next_request_id++;
+      request.requester = ModemRequester::App;
+      request.type = ModemRequestType::Reset;
+      SubmitModemRequest(request, pdMS_TO_TICKS(1000));
+
+      ModemResponse response;
+      WaitForAppModemResponse(request.requestId, response, pdMS_TO_TICKS(10000));
+
       Serial.println("Restarting ESP32...");
-      delay(1000);
+      vTaskDelay(pdMS_TO_TICKS(1000));
       ESP.restart();
       return;
+    }
+  }
+}
+
+void SendModemResponse(const ModemResponse& response) {
+  QueueHandle_t target_queue = nullptr;
+  if (response.requester == ModemRequester::Web) {
+    target_queue = web_modem_response_queue;
+  } else {
+    target_queue = app_modem_response_queue;
+  }
+
+  if (target_queue == nullptr) {
+    Serial.println("No modem response queue is available for the requester");
+    return;
+  }
+
+  if (xQueueSend(target_queue, &response, pdMS_TO_TICKS(100)) != pdTRUE) {
+    Serial.println("Failed to deliver the modem response to the requester queue");
+  }
+}
+
+void ProcessModemRequest(Modem& modem, const ModemRequest& request) {
+  ModemResponse response;
+  response.requestId = request.requestId;
+  response.requester = request.requester;
+  response.type = request.type;
+
+  switch (request.type) {
+    case ModemRequestType::SendAtCommand: {
+      const String raw_response = modem.SendAtCommand(
+          request.command,
+          request.timeoutMs > 0 ? request.timeoutMs : 5000);
+      response.success = raw_response.length() > 0;
+      CopyString(response.message, raw_response);
+      break;
+    }
+
+    case ModemRequestType::Ping: {
+      const ModemPingResult result = modem.Ping();
+      response.success = result.success;
+      CopyString(response.message, result.message);
+      break;
+    }
+
+    case ModemRequestType::SendSms: {
+      response.success = modem.SendSms(request.phone, request.text);
+      CopyCString(response.message,
+                  response.success ? "SMS send completed." : "SMS send failed.");
+      break;
+    }
+
+    case ModemRequestType::Reset:
+      modem.Reset();
+      response.success = true;
+      CopyCString(response.message, "Modem reset completed.");
+      break;
+  }
+
+  SendModemResponse(response);
+}
+
+void ModemTaskMain(void*) {
+  static Modem modem(Serial1);
+
+  modem.Begin();
+
+  for (;;) {
+    ModemRequest request;
+    if (xQueueReceive(modem_request_queue, &request, 0) == pdTRUE) {
+      ProcessModemRequest(modem, request);
+    }
+
+    SmsMessage message;
+    if (modem.Poll(message)) {
+      AppEvent event;
+      event.type = AppEventType::IncomingSms;
+      CopySmsEnvelope(event.sms, message);
+      if (!QueueAppEvent(event, pdMS_TO_TICKS(100))) {
+        Serial.println("Failed to enqueue the incoming SMS for AppTask");
+      }
+    }
+
+    if (Serial.available()) {
+      modem.WritePassthroughByte(Serial.read());
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(kTaskIdleDelayMs));
+  }
+}
+
+void AppTaskMain(void*) {
+  static SmsInbox sms_inbox;
+  static Notifier notifier;
+
+  notifier.Begin();
+  uint32_t next_request_id = 1;
+
+  for (;;) {
+    AppEvent event;
+    if (xQueueReceive(app_event_queue, &event, portMAX_DELAY) != pdTRUE) {
+      continue;
+    }
+
+    switch (event.type) {
+      case AppEventType::StartupNotice:
+        SendStartupNotice(notifier);
+        break;
+
+      case AppEventType::ConfigUpdated:
+        SendConfigUpdatedNotice(notifier);
+        break;
+
+      case AppEventType::IncomingSms: {
+        AppConfig config;
+        if (!LoadConfigSnapshot(config, nullptr)) {
+          Serial.println("Failed to load config before processing an SMS");
+          break;
+        }
+
+        const SmsMessage message = ToSmsMessage(event.sms);
+        const InboxAction action = sms_inbox.Process(config, message);
+        HandleInboxAction(action, notifier, next_request_id);
+        break;
+      }
+    }
+  }
+}
+
+void WebTaskMain(void*) {
+  static WebAdmin web_admin(config_store, shared_state, modem_request_queue,
+                            web_modem_response_queue, app_event_queue);
+
+  web_admin.Begin();
+  for (;;) {
+    web_admin.HandleClient();
+    vTaskDelay(pdMS_TO_TICKS(kTaskIdleDelayMs));
+  }
+}
+
+void HaltSetup(const char* message) {
+  Serial.println(message);
+  while (true) {
+    BlinkShort(100);
   }
 }
 
@@ -92,15 +367,24 @@ void setup() {
   digitalWrite(LED_BUILTIN, HIGH);
 
   Serial.begin(115200);
-  delay(1500);
+  delay(kStartupDelayMs);
 
-  // Load persisted configuration before any network-facing services start.
-  config_store.Load(config);
-  config_valid = IsConfigValid(config);
+  shared_state.mutex = xSemaphoreCreateMutex();
+  if (shared_state.mutex == nullptr) {
+    HaltSetup("Failed to create the shared config mutex");
+  }
 
-  // Initialize the modem first so the cellular side reaches a stable state
-  // before Wi-Fi and the admin UI come online.
-  modem.Begin();
+  modem_request_queue = xQueueCreate(kModemQueueDepth, sizeof(ModemRequest));
+  web_modem_response_queue = xQueueCreate(kWebResponseQueueDepth, sizeof(ModemResponse));
+  app_modem_response_queue = xQueueCreate(kAppResponseQueueDepth, sizeof(ModemResponse));
+  app_event_queue = xQueueCreate(kAppEventQueueDepth, sizeof(AppEvent));
+  if (modem_request_queue == nullptr || web_modem_response_queue == nullptr ||
+      app_modem_response_queue == nullptr || app_event_queue == nullptr) {
+    HaltSetup("Failed to create one or more task queues");
+  }
+
+  config_store.Load(shared_state.config);
+  shared_state.configValid = IsConfigValid(shared_state.config);
 
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
   WiFi.begin(WIFI_SSID, WIFI_PASS, 0, nullptr, true);
@@ -121,7 +405,6 @@ void setup() {
     ntp_retry++;
   }
   if (time(nullptr) >= 100000) {
-    time_synced = true;
     Serial.println("NTP sync succeeded");
     Serial.print("Current UTC timestamp: ");
     Serial.println(time(nullptr));
@@ -129,35 +412,44 @@ void setup() {
     Serial.println("NTP sync failed; falling back to device time");
   }
 
-  notifier.Begin();
-  web_admin.Begin();
+  if (xTaskCreate(ModemTaskMain, "ModemTask", kModemTaskStackBytes, nullptr, 4,
+                  nullptr) != pdPASS) {
+    HaltSetup("Failed to create ModemTask");
+  }
+  if (xTaskCreate(AppTaskMain, "AppTask", kAppTaskStackBytes, nullptr, 3,
+                  nullptr) != pdPASS) {
+    HaltSetup("Failed to create AppTask");
+  }
+  if (xTaskCreate(WebTaskMain, "WebTask", kWebTaskStackBytes, nullptr, 2,
+                  nullptr) != pdPASS) {
+    HaltSetup("Failed to create WebTask");
+  }
+
   digitalWrite(LED_BUILTIN, LOW);
 
-  if (config_valid) {
-    Serial.println("Config is valid; sending startup notice...");
-    String subject = "短信转发器已启动";
-    String body = "设备已启动\n设备地址: " + GetDeviceUrl();
-    notifier.SendEmail(config, subject.c_str(), body.c_str());
+  if (shared_state.configValid) {
+    AppEvent event;
+    event.type = AppEventType::StartupNotice;
+    if (!QueueAppEvent(event, pdMS_TO_TICKS(1000))) {
+      Serial.println("Failed to queue the startup notice event");
+    }
   }
 }
 
 void loop() {
-  // Keep the admin UI responsive on every iteration of the blocking main loop.
-  web_admin.HandleClient();
+  static unsigned long last_print_time = 0;
+  bool config_valid = false;
 
-  // Print the local setup URL once per second until delivery settings exist.
+  if (shared_state.mutex != nullptr &&
+      xSemaphoreTake(shared_state.mutex, portMAX_DELAY) == pdTRUE) {
+    config_valid = shared_state.configValid;
+    xSemaphoreGive(shared_state.mutex);
+  }
+
   if (!config_valid && millis() - last_print_time >= 1000) {
     last_print_time = millis();
     Serial.println("Please visit " + GetDeviceUrl() + " to configure the system");
   }
 
-  SmsMessage message;
-  if (modem.Poll(message)) {
-    const InboxAction action = sms_inbox.Process(config, message);
-    HandleInboxAction(action);
-  }
-
-  if (Serial.available()) {
-    modem.WritePassthroughByte(Serial.read());
-  }
+  vTaskDelay(pdMS_TO_TICKS(kLoopSleepMs));
 }

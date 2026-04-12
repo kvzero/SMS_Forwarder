@@ -9,13 +9,23 @@
 
 #include "web_pages.h"
 
-WebAdmin::WebAdmin(ConfigStore& config_store, AppConfig& config, Modem& modem,
-                   Notifier& notifier, bool& config_valid)
+namespace {
+
+constexpr TickType_t kWebSyncPollSlice = pdMS_TO_TICKS(50);
+constexpr unsigned long kPendingRequestLifetimeMs = 60000;
+constexpr TickType_t kSendSmsWaitTicks = pdMS_TO_TICKS(40000);
+
+}  // namespace
+
+WebAdmin::WebAdmin(ConfigStore& config_store, SharedConfigState& shared_state,
+                   QueueHandle_t modem_request_queue, QueueHandle_t web_response_queue,
+                   QueueHandle_t app_event_queue)
     : config_store_(config_store),
-      config_(config),
-      modem_(modem),
-      notifier_(notifier),
-      config_valid_(config_valid),
+      shared_state_(shared_state),
+      modem_request_queue_(modem_request_queue),
+      web_response_queue_(web_response_queue),
+      app_event_queue_(app_event_queue),
+      next_request_id_(1),
       server_(80) {}
 
 // HTTP server lifecycle and shared helpers.
@@ -29,14 +39,236 @@ void WebAdmin::Begin() {
   server_.on("/query", [this]() { HandleQuery(); });
   server_.on("/flight", [this]() { HandleFlightMode(); });
   server_.on("/at", [this]() { HandleATCommand(); });
+  server_.on("/modem_result", [this]() { HandleModemResult(); });
   server_.begin();
   Serial.println("HTTP server started");
 }
 
 void WebAdmin::HandleClient() {
+  DrainModemResponses();
+  CleanupPendingRequests();
   server_.handleClient();
 }
 
+bool WebAdmin::LoadConfigSnapshot(AppConfig& config, bool* config_valid) const {
+  if (shared_state_.mutex == nullptr) {
+    return false;
+  }
+
+  if (xSemaphoreTake(shared_state_.mutex, portMAX_DELAY) != pdTRUE) {
+    return false;
+  }
+
+  config = shared_state_.config;
+  if (config_valid != nullptr) {
+    *config_valid = shared_state_.configValid;
+  }
+  xSemaphoreGive(shared_state_.mutex);
+  return true;
+}
+
+bool WebAdmin::SubmitModemRequest(const ModemRequest& request, TickType_t timeout_ticks) {
+  if (modem_request_queue_ == nullptr) {
+    return false;
+  }
+
+  return xQueueSend(modem_request_queue_, &request, timeout_ticks) == pdTRUE;
+}
+
+bool WebAdmin::WaitForModemResponse(uint32_t request_id, ModemResponse& response,
+                                    TickType_t timeout_ticks) {
+  const TickType_t deadline = xTaskGetTickCount() + timeout_ticks;
+
+  while (xTaskGetTickCount() < deadline) {
+    const TickType_t now = xTaskGetTickCount();
+    const TickType_t wait_time =
+        (deadline - now) > kWebSyncPollSlice ? kWebSyncPollSlice : (deadline - now);
+
+    ModemResponse incoming;
+    if (xQueueReceive(web_response_queue_, &incoming, wait_time) != pdTRUE) {
+      continue;
+    }
+
+    if (incoming.requestId == request_id) {
+      response = incoming;
+      return true;
+    }
+
+    StorePendingResponse(incoming);
+  }
+
+  return false;
+}
+
+bool WebAdmin::RequestAtCommand(const String& cmd, unsigned long timeout_ms, String& response) {
+  ModemRequest request;
+  request.requestId = AllocateRequestId();
+  request.requester = ModemRequester::Web;
+  request.type = ModemRequestType::SendAtCommand;
+  request.timeoutMs = timeout_ms;
+  CopyString(request.command, cmd);
+
+  if (!SubmitModemRequest(request)) {
+    return false;
+  }
+
+  ModemResponse result;
+  if (!WaitForModemResponse(request.requestId, result, pdMS_TO_TICKS(timeout_ms + 1000))) {
+    return false;
+  }
+
+  response = result.message;
+  return result.success;
+}
+
+bool WebAdmin::RequestSendSms(const String& phone, const String& content) {
+  ModemRequest request;
+  request.requestId = AllocateRequestId();
+  request.requester = ModemRequester::Web;
+  request.type = ModemRequestType::SendSms;
+  CopyString(request.phone, phone);
+  CopyString(request.text, content);
+
+  if (!SubmitModemRequest(request)) {
+    return false;
+  }
+
+  ModemResponse response;
+  if (!WaitForModemResponse(request.requestId, response, kSendSmsWaitTicks)) {
+    return false;
+  }
+
+  return response.success;
+}
+
+uint32_t WebAdmin::StartAsyncAtCommand(const String& cmd, unsigned long timeout_ms) {
+  PendingWebRequest* slot = nullptr;
+  uint32_t request_id = 0;
+
+  for (PendingWebRequest& pending_request : pending_requests_) {
+    if (!pending_request.inUse) {
+      slot = &pending_request;
+      request_id = AllocateRequestId();
+      pending_request.inUse = true;
+      pending_request.completed = false;
+      pending_request.requestId = request_id;
+      pending_request.success = false;
+      pending_request.createdAtMs = millis();
+      pending_request.message = "";
+      break;
+    }
+  }
+
+  if (slot == nullptr) {
+    return 0;
+  }
+
+  ModemRequest request;
+  request.requestId = request_id;
+  request.requester = ModemRequester::Web;
+  request.type = ModemRequestType::SendAtCommand;
+  request.timeoutMs = timeout_ms;
+  CopyString(request.command, cmd);
+
+  if (!SubmitModemRequest(request)) {
+    slot->inUse = false;
+    slot->message = "";
+    return 0;
+  }
+
+  return request_id;
+}
+
+uint32_t WebAdmin::StartAsyncPing() {
+  PendingWebRequest* slot = nullptr;
+  uint32_t request_id = 0;
+
+  for (PendingWebRequest& pending_request : pending_requests_) {
+    if (!pending_request.inUse) {
+      slot = &pending_request;
+      request_id = AllocateRequestId();
+      pending_request.inUse = true;
+      pending_request.completed = false;
+      pending_request.requestId = request_id;
+      pending_request.success = false;
+      pending_request.createdAtMs = millis();
+      pending_request.message = "";
+      break;
+    }
+  }
+
+  if (slot == nullptr) {
+    return 0;
+  }
+
+  ModemRequest request;
+  request.requestId = request_id;
+  request.requester = ModemRequester::Web;
+  request.type = ModemRequestType::Ping;
+
+  if (!SubmitModemRequest(request)) {
+    slot->inUse = false;
+    slot->message = "";
+    return 0;
+  }
+
+  return request_id;
+}
+
+uint32_t WebAdmin::AllocateRequestId() {
+  if (next_request_id_ == 0) {
+    next_request_id_ = 1;
+  }
+
+  return next_request_id_++;
+}
+
+void WebAdmin::DrainModemResponses() {
+  if (web_response_queue_ == nullptr) {
+    return;
+  }
+
+  ModemResponse response;
+  while (xQueueReceive(web_response_queue_, &response, 0) == pdTRUE) {
+    StorePendingResponse(response);
+  }
+}
+
+void WebAdmin::StorePendingResponse(const ModemResponse& response) {
+  PendingWebRequest* slot = FindPendingRequest(response.requestId);
+  if (slot == nullptr) {
+    return;
+  }
+
+  slot->completed = true;
+  slot->success = response.success;
+  slot->message = response.message;
+}
+
+WebAdmin::PendingWebRequest* WebAdmin::FindPendingRequest(uint32_t request_id) {
+  for (PendingWebRequest& pending_request : pending_requests_) {
+    if (pending_request.inUse && pending_request.requestId == request_id) {
+      return &pending_request;
+    }
+  }
+
+  return nullptr;
+}
+
+void WebAdmin::CleanupPendingRequests() {
+  const unsigned long now = millis();
+  for (PendingWebRequest& pending_request : pending_requests_) {
+    if (!pending_request.inUse) {
+      continue;
+    }
+
+    if (now - pending_request.createdAtMs < kPendingRequestLifetimeMs) {
+      continue;
+    }
+
+    pending_request = PendingWebRequest{};
+  }
+}
 String WebAdmin::GetDeviceUrl() const {
   return "http://" + WiFi.localIP().toString() + "/";
 }
@@ -56,7 +288,13 @@ String WebAdmin::EscapeJson(const String& value) const {
 }
 
 bool WebAdmin::CheckAuth() {
-  if (!server_.authenticate(config_.webUser.c_str(), config_.webPass.c_str())) {
+  AppConfig config;
+  if (!LoadConfigSnapshot(config, nullptr)) {
+    server_.send(500, "text/plain", "配置忙，请稍后重试");
+    return false;
+  }
+
+  if (!server_.authenticate(config.webUser.c_str(), config.webPass.c_str())) {
     server_.requestAuthentication(BASIC_AUTH, "SMS Forwarding", "请输入管理员账号密码");
     return false;
   }
@@ -67,25 +305,31 @@ bool WebAdmin::CheckAuth() {
 void WebAdmin::HandleRoot() {
   if (!CheckAuth()) return;
 
+  AppConfig config;
+  if (!LoadConfigSnapshot(config, nullptr)) {
+    server_.send(500, "text/plain", "配置忙，请稍后重试");
+    return;
+  }
+
   String html = String(kConfigPageHtml);
   html.replace("%IP%", WiFi.localIP().toString());
-  html.replace("%WEB_USER%", config_.webUser);
-  html.replace("%WEB_PASS%", config_.webPass);
-  html.replace("%SMTP_SERVER%", config_.smtpServer);
-  html.replace("%SMTP_PORT%", String(config_.smtpPort));
-  html.replace("%SMTP_USER%", config_.smtpUser);
-  html.replace("%SMTP_PASS%", config_.smtpPass);
-  html.replace("%SMTP_SEND_TO%", config_.smtpSendTo);
-  html.replace("%ADMIN_PHONE%", config_.adminPhone);
-  html.replace("%NUMBER_BLACK_LIST%", config_.numberBlackList);
+  html.replace("%WEB_USER%", config.webUser);
+  html.replace("%WEB_PASS%", config.webPass);
+  html.replace("%SMTP_SERVER%", config.smtpServer);
+  html.replace("%SMTP_PORT%", String(config.smtpPort));
+  html.replace("%SMTP_USER%", config.smtpUser);
+  html.replace("%SMTP_PASS%", config.smtpPass);
+  html.replace("%SMTP_SEND_TO%", config.smtpSendTo);
+  html.replace("%ADMIN_PHONE%", config.adminPhone);
+  html.replace("%NUMBER_BLACK_LIST%", config.numberBlackList);
 
   String channels_html;
   // Render the push channel section from the persisted configuration so the UI
   // always reflects the current stored values.
   for (int i = 0; i < kMaxPushChannels; i++) {
     const String idx = String(i);
-    const String enabled_class = config_.pushChannels[i].enabled ? " enabled" : "";
-    const String checked = config_.pushChannels[i].enabled ? " checked" : "";
+    const String enabled_class = config.pushChannels[i].enabled ? " enabled" : "";
+    const String checked = config.pushChannels[i].enabled ? " checked" : "";
 
     channels_html += "<div class=\"push-channel" + enabled_class + "\" id=\"channel" + idx + "\">";
     channels_html += "<div class=\"push-channel-header\">";
@@ -96,46 +340,46 @@ void WebAdmin::HandleRoot() {
 
     channels_html += "<div class=\"form-group\">";
     channels_html += "<label>通道名称</label>";
-    channels_html += "<input type=\"text\" name=\"push" + idx + "name\" value=\"" + config_.pushChannels[i].name + "\" placeholder=\"自定义名称\">";
+    channels_html += "<input type=\"text\" name=\"push" + idx + "name\" value=\"" + config.pushChannels[i].name + "\" placeholder=\"自定义名称\">";
     channels_html += "</div>";
 
     channels_html += "<div class=\"form-group\">";
     channels_html += "<label>推送方式</label>";
     channels_html += "<select name=\"push" + idx + "type\" id=\"push" + idx + "type\" onchange=\"updateTypeHint(" + idx + ")\">";
-    channels_html += "<option value=\"1\"" + String(config_.pushChannels[i].type == PUSH_TYPE_POST_JSON ? " selected" : "") + ">POST JSON（通用格式）</option>";
-    channels_html += "<option value=\"2\"" + String(config_.pushChannels[i].type == PUSH_TYPE_BARK ? " selected" : "") + ">Bark（iOS推送）</option>";
-    channels_html += "<option value=\"3\"" + String(config_.pushChannels[i].type == PUSH_TYPE_GET ? " selected" : "") + ">GET请求（参数在URL中）</option>";
-    channels_html += "<option value=\"4\"" + String(config_.pushChannels[i].type == PUSH_TYPE_DINGTALK ? " selected" : "") + ">钉钉机器人</option>";
-    channels_html += "<option value=\"5\"" + String(config_.pushChannels[i].type == PUSH_TYPE_PUSHPLUS ? " selected" : "") + ">PushPlus</option>";
-    channels_html += "<option value=\"6\"" + String(config_.pushChannels[i].type == PUSH_TYPE_SERVERCHAN ? " selected" : "") + ">Server酱</option>";
-    channels_html += "<option value=\"7\"" + String(config_.pushChannels[i].type == PUSH_TYPE_CUSTOM ? " selected" : "") + ">自定义模板</option>";
-    channels_html += "<option value=\"8\"" + String(config_.pushChannels[i].type == PUSH_TYPE_FEISHU ? " selected" : "") + ">飞书机器人</option>";
-    channels_html += "<option value=\"9\"" + String(config_.pushChannels[i].type == PUSH_TYPE_GOTIFY ? " selected" : "") + ">Gotify</option>";
-    channels_html += "<option value=\"10\"" + String(config_.pushChannels[i].type == PUSH_TYPE_TELEGRAM ? " selected" : "") + ">Telegram Bot</option>";
+    channels_html += "<option value=\"1\"" + String(config.pushChannels[i].type == PUSH_TYPE_POST_JSON ? " selected" : "") + ">POST JSON（通用格式）</option>";
+    channels_html += "<option value=\"2\"" + String(config.pushChannels[i].type == PUSH_TYPE_BARK ? " selected" : "") + ">Bark（iOS推送）</option>";
+    channels_html += "<option value=\"3\"" + String(config.pushChannels[i].type == PUSH_TYPE_GET ? " selected" : "") + ">GET请求（参数在URL中）</option>";
+    channels_html += "<option value=\"4\"" + String(config.pushChannels[i].type == PUSH_TYPE_DINGTALK ? " selected" : "") + ">钉钉机器人</option>";
+    channels_html += "<option value=\"5\"" + String(config.pushChannels[i].type == PUSH_TYPE_PUSHPLUS ? " selected" : "") + ">PushPlus</option>";
+    channels_html += "<option value=\"6\"" + String(config.pushChannels[i].type == PUSH_TYPE_SERVERCHAN ? " selected" : "") + ">Server酱</option>";
+    channels_html += "<option value=\"7\"" + String(config.pushChannels[i].type == PUSH_TYPE_CUSTOM ? " selected" : "") + ">自定义模板</option>";
+    channels_html += "<option value=\"8\"" + String(config.pushChannels[i].type == PUSH_TYPE_FEISHU ? " selected" : "") + ">飞书机器人</option>";
+    channels_html += "<option value=\"9\"" + String(config.pushChannels[i].type == PUSH_TYPE_GOTIFY ? " selected" : "") + ">Gotify</option>";
+    channels_html += "<option value=\"10\"" + String(config.pushChannels[i].type == PUSH_TYPE_TELEGRAM ? " selected" : "") + ">Telegram Bot</option>";
     channels_html += "</select>";
     channels_html += "<div class=\"push-type-hint\" id=\"hint" + idx + "\"></div>";
     channels_html += "</div>";
 
     channels_html += "<div class=\"form-group\">";
     channels_html += "<label>推送URL/Webhook</label>";
-    channels_html += "<input type=\"text\" name=\"push" + idx + "url\" value=\"" + config_.pushChannels[i].url + "\" placeholder=\"http://your-server.com/api 或 webhook地址\">";
+    channels_html += "<input type=\"text\" name=\"push" + idx + "url\" value=\"" + config.pushChannels[i].url + "\" placeholder=\"http://your-server.com/api 或 webhook地址\">";
     channels_html += "</div>";
 
     channels_html += "<div id=\"extra" + idx + "\" style=\"display:none;\">";
     channels_html += "<div class=\"form-group\">";
     channels_html += "<label id=\"key1label" + idx + "\">参数1</label>";
-    channels_html += "<input type=\"text\" name=\"push" + idx + "key1\" id=\"key1" + idx + "\" value=\"" + config_.pushChannels[i].key1 + "\">";
+    channels_html += "<input type=\"text\" name=\"push" + idx + "key1\" id=\"key1" + idx + "\" value=\"" + config.pushChannels[i].key1 + "\">";
     channels_html += "</div>";
     channels_html += "<div class=\"form-group\" id=\"key2group" + idx + "\">";
     channels_html += "<label id=\"key2label" + idx + "\">参数2</label>";
-    channels_html += "<input type=\"text\" name=\"push" + idx + "key2\" id=\"key2" + idx + "\" value=\"" + config_.pushChannels[i].key2 + "\">";
+    channels_html += "<input type=\"text\" name=\"push" + idx + "key2\" id=\"key2" + idx + "\" value=\"" + config.pushChannels[i].key2 + "\">";
     channels_html += "</div>";
     channels_html += "</div>";
 
     channels_html += "<div id=\"custom" + idx + "\" style=\"display:none;\">";
     channels_html += "<div class=\"form-group\">";
     channels_html += "<label>请求体模板（使用 {sender} {message} {timestamp} 占位符）</label>";
-    channels_html += "<textarea name=\"push" + idx + "body\" rows=\"4\" style=\"width:100%;font-family:monospace;\">" + config_.pushChannels[i].customBody + "</textarea>";
+    channels_html += "<textarea name=\"push" + idx + "body\" rows=\"4\" style=\"width:100%;font-family:monospace;\">" + config.pushChannels[i].customBody + "</textarea>";
     channels_html += "</div>";
     channels_html += "</div>";
 
@@ -164,7 +408,8 @@ void WebAdmin::HandleFlightMode() {
   String message;
 
   if (action == "query") {
-    String resp = modem_.SendAtCommand("AT+CFUN?", 2000);
+    String resp;
+    RequestAtCommand("AT+CFUN?", 2000, resp);
     Serial.println("CFUN query response: " + resp);
 
     if (resp.indexOf("+CFUN:") >= 0) {
@@ -196,7 +441,8 @@ void WebAdmin::HandleFlightMode() {
       message = "查询失败";
     }
   } else if (action == "toggle") {
-    String resp = modem_.SendAtCommand("AT+CFUN?", 2000);
+    String resp;
+    RequestAtCommand("AT+CFUN?", 2000, resp);
     Serial.println("CFUN query response: " + resp);
 
     if (resp.indexOf("+CFUN:") >= 0) {
@@ -207,7 +453,8 @@ void WebAdmin::HandleFlightMode() {
       const String cmd = "AT+CFUN=" + String(new_mode);
 
       Serial.println("Toggling flight mode with command: " + cmd);
-      const String set_resp = modem_.SendAtCommand(cmd.c_str(), 5000);
+      String set_resp;
+      RequestAtCommand(cmd, 5000, set_resp);
       Serial.println("CFUN set response: " + set_resp);
 
       if (set_resp.indexOf("OK") >= 0) {
@@ -224,7 +471,8 @@ void WebAdmin::HandleFlightMode() {
       message = "无法获取当前状态";
     }
   } else if (action == "on") {
-    const String resp = modem_.SendAtCommand("AT+CFUN=4", 5000);
+    String resp;
+    RequestAtCommand("AT+CFUN=4", 5000, resp);
     if (resp.indexOf("OK") >= 0) {
       success = true;
       message = "已开启飞行模式 ✈️";
@@ -232,7 +480,8 @@ void WebAdmin::HandleFlightMode() {
       message = "开启失败: " + resp;
     }
   } else if (action == "off") {
-    const String resp = modem_.SendAtCommand("AT+CFUN=1", 5000);
+    String resp;
+    RequestAtCommand("AT+CFUN=1", 5000, resp);
     if (resp.indexOf("OK") >= 0) {
       success = true;
       message = "已关闭飞行模式 🟢";
@@ -254,29 +503,24 @@ void WebAdmin::HandleATCommand() {
   if (!CheckAuth()) return;
 
   const String cmd = server_.arg("cmd");
-  bool success = false;
-  String message;
+  String json = "{";
 
   if (cmd.length() == 0) {
-    message = "错误：指令不能为空";
+    json += "\"accepted\":false,";
+    json += "\"message\":\"请输入 AT 指令。\"";
   } else {
-    Serial.println("Web requested AT command: " + cmd);
-    const String resp = modem_.SendAtCommand(cmd.c_str(), 5000);
-    Serial.println("Modem AT response: " + resp);
-
-    if (resp.length() > 0) {
-      success = true;
-      message = resp;
+    Serial.println("Web queued AT command: " + cmd);
+    const uint32_t request_id = StartAsyncAtCommand(cmd, 5000);
+    if (request_id == 0) {
+      json += "\"accepted\":false,";
+      json += "\"message\":\"系统忙，请稍后重试。\"";
     } else {
-      message = "超时或无响应";
+      json += "\"accepted\":true,";
+      json += "\"requestId\":" + String(request_id);
     }
   }
 
-  String json = "{";
-  json += "\"success\":" + String(success ? "true" : "false") + ",";
-  json += "\"message\":\"" + EscapeJson(message) + "\"";
   json += "}";
-
   server_.send(200, "application/json", json);
 }
 
@@ -289,7 +533,8 @@ void WebAdmin::HandleQuery() {
   String message;
 
   if (type == "ati") {
-    const String resp = modem_.SendAtCommand("ATI", 2000);
+    String resp;
+    RequestAtCommand("ATI", 2000, resp);
     Serial.println("ATI response: " + resp);
 
     if (resp.indexOf("OK") >= 0) {
@@ -323,7 +568,8 @@ void WebAdmin::HandleQuery() {
       message = "查询失败";
     }
   } else if (type == "signal") {
-    const String resp = modem_.SendAtCommand("AT+CESQ", 2000);
+    String resp;
+    RequestAtCommand("AT+CESQ", 2000, resp);
     Serial.println("CESQ response: " + resp);
 
     if (resp.indexOf("+CESQ:") >= 0) {
@@ -384,7 +630,8 @@ void WebAdmin::HandleQuery() {
     success = true;
     message = "<table class='info-table'>";
 
-    String resp = modem_.SendAtCommand("AT+CIMI", 2000);
+    String resp;
+    RequestAtCommand("AT+CIMI", 2000, resp);
     String imsi = "未知";
     if (resp.indexOf("OK") >= 0) {
       const int start = resp.indexOf('\n');
@@ -400,7 +647,7 @@ void WebAdmin::HandleQuery() {
     }
     message += "<tr><td>IMSI</td><td>" + imsi + "</td></tr>";
 
-    resp = modem_.SendAtCommand("AT+ICCID", 2000);
+    RequestAtCommand("AT+ICCID", 2000, resp);
     String iccid = "未知";
     if (resp.indexOf("+ICCID:") >= 0) {
       const int idx = resp.indexOf("+ICCID:");
@@ -412,7 +659,7 @@ void WebAdmin::HandleQuery() {
     }
     message += "<tr><td>ICCID</td><td>" + iccid + "</td></tr>";
 
-    resp = modem_.SendAtCommand("AT+CNUM", 2000);
+    RequestAtCommand("AT+CNUM", 2000, resp);
     String phone_num = "未存储或不支持";
     if (resp.indexOf("+CNUM:") >= 0) {
       const int idx = resp.indexOf(",\"");
@@ -430,7 +677,8 @@ void WebAdmin::HandleQuery() {
     success = true;
     message = "<table class='info-table'>";
 
-    String resp = modem_.SendAtCommand("AT+CEREG?", 2000);
+    String resp;
+    RequestAtCommand("AT+CEREG?", 2000, resp);
     String reg_status = "未知";
     if (resp.indexOf("+CEREG:") >= 0) {
       const int idx = resp.indexOf("+CEREG:");
@@ -452,7 +700,7 @@ void WebAdmin::HandleQuery() {
     }
     message += "<tr><td>网络注册</td><td>" + reg_status + "</td></tr>";
 
-    resp = modem_.SendAtCommand("AT+COPS?", 2000);
+    RequestAtCommand("AT+COPS?", 2000, resp);
     String oper = "未知";
     if (resp.indexOf("+COPS:") >= 0) {
       const int idx = resp.indexOf(",\"");
@@ -465,7 +713,7 @@ void WebAdmin::HandleQuery() {
     }
     message += "<tr><td>运营商</td><td>" + oper + "</td></tr>";
 
-    resp = modem_.SendAtCommand("AT+CGACT?", 2000);
+    RequestAtCommand("AT+CGACT?", 2000, resp);
     String pdp_status = "未激活";
     if (resp.indexOf("+CGACT: 1,1") >= 0) {
       pdp_status = "已激活";
@@ -474,7 +722,7 @@ void WebAdmin::HandleQuery() {
     }
     message += "<tr><td>数据连接</td><td>" + pdp_status + "</td></tr>";
 
-    resp = modem_.SendAtCommand("AT+CGDCONT?", 2000);
+    RequestAtCommand("AT+CGDCONT?", 2000, resp);
     String apn = "未知";
     if (resp.indexOf("+CGDCONT:") >= 0) {
       int idx = resp.indexOf(",\"");
@@ -555,7 +803,7 @@ void WebAdmin::HandleSendSms() {
     Serial.println("Target phone: " + phone);
     Serial.println("SMS content: " + content);
 
-    success = modem_.SendSms(phone.c_str(), content.c_str());
+    success = RequestSendSms(phone, content);
     result_msg = success ? "短信发送成功！" : "短信发送失败，请检查模组状态";
   }
 
@@ -592,39 +840,51 @@ void WebAdmin::HandleSendSms() {
 void WebAdmin::HandleSave() {
   if (!CheckAuth()) return;
 
+  AppConfig config;
+  if (!LoadConfigSnapshot(config, nullptr)) {
+    server_.send(500, "text/plain", "配置忙，请稍后重试");
+    return;
+  }
+
   String new_web_user = server_.arg("webUser");
   String new_web_pass = server_.arg("webPass");
 
   if (new_web_user.length() == 0) new_web_user = DEFAULT_WEB_USER;
   if (new_web_pass.length() == 0) new_web_pass = DEFAULT_WEB_PASS;
 
-  config_.webUser = new_web_user;
-  config_.webPass = new_web_pass;
-  config_.smtpServer = server_.arg("smtpServer");
-  config_.smtpPort = server_.arg("smtpPort").toInt();
-  if (config_.smtpPort == 0) config_.smtpPort = 465;
-  config_.smtpUser = server_.arg("smtpUser");
-  config_.smtpPass = server_.arg("smtpPass");
-  config_.smtpSendTo = server_.arg("smtpSendTo");
-  config_.adminPhone = server_.arg("adminPhone");
-  config_.numberBlackList = server_.arg("numberBlackList");
+  config.webUser = new_web_user;
+  config.webPass = new_web_pass;
+  config.smtpServer = server_.arg("smtpServer");
+  config.smtpPort = server_.arg("smtpPort").toInt();
+  if (config.smtpPort == 0) config.smtpPort = 465;
+  config.smtpUser = server_.arg("smtpUser");
+  config.smtpPass = server_.arg("smtpPass");
+  config.smtpSendTo = server_.arg("smtpSendTo");
+  config.adminPhone = server_.arg("adminPhone");
+  config.numberBlackList = server_.arg("numberBlackList");
 
   for (int i = 0; i < kMaxPushChannels; i++) {
     const String idx = String(i);
-    config_.pushChannels[i].enabled = server_.arg("push" + idx + "en") == "on";
-    config_.pushChannels[i].type = (PushType)server_.arg("push" + idx + "type").toInt();
-    config_.pushChannels[i].url = server_.arg("push" + idx + "url");
-    config_.pushChannels[i].name = server_.arg("push" + idx + "name");
-    config_.pushChannels[i].key1 = server_.arg("push" + idx + "key1");
-    config_.pushChannels[i].key2 = server_.arg("push" + idx + "key2");
-    config_.pushChannels[i].customBody = server_.arg("push" + idx + "body");
-    if (config_.pushChannels[i].name.length() == 0) {
-      config_.pushChannels[i].name = "通道" + String(i + 1);
+    config.pushChannels[i].enabled = server_.arg("push" + idx + "en") == "on";
+    config.pushChannels[i].type = (PushType)server_.arg("push" + idx + "type").toInt();
+    config.pushChannels[i].url = server_.arg("push" + idx + "url");
+    config.pushChannels[i].name = server_.arg("push" + idx + "name");
+    config.pushChannels[i].key1 = server_.arg("push" + idx + "key1");
+    config.pushChannels[i].key2 = server_.arg("push" + idx + "key2");
+    config.pushChannels[i].customBody = server_.arg("push" + idx + "body");
+    if (config.pushChannels[i].name.length() == 0) {
+      config.pushChannels[i].name = "通道" + String(i + 1);
     }
   }
 
-  config_store_.Save(config_);
-  config_valid_ = IsConfigValid(config_);
+  const bool new_config_valid = IsConfigValid(config);
+  config_store_.Save(config);
+
+  if (shared_state_.mutex != nullptr && xSemaphoreTake(shared_state_.mutex, portMAX_DELAY) == pdTRUE) {
+    shared_state_.config = config;
+    shared_state_.configValid = new_config_valid;
+    xSemaphoreGive(shared_state_.mutex);
+  }
 
   // Save first, then show the success page so the browser only reports success
   // after NVS has been updated.
@@ -651,22 +911,72 @@ void WebAdmin::HandleSave() {
 )rawliteral";
   server_.send(200, "text/html", html);
 
-  if (config_valid_) {
-    Serial.println("Config is valid; sending update notice...");
-    String subject = "短信转发器配置已更新";
-    String body = "设备配置已更新\n设备地址: " + GetDeviceUrl();
-    notifier_.SendEmail(config_, subject.c_str(), body.c_str());
+  if (new_config_valid && app_event_queue_ != nullptr) {
+    AppEvent event;
+    event.type = AppEventType::ConfigUpdated;
+    if (xQueueSend(app_event_queue_, &event, pdMS_TO_TICKS(100)) != pdTRUE) {
+      Serial.println("Failed to queue config-updated event for AppTask");
+    }
   }
 }
 
 void WebAdmin::HandlePing() {
   if (!CheckAuth()) return;
 
-  const ModemPingResult result = modem_.Ping();
+  const uint32_t request_id = StartAsyncPing();
   String json = "{";
-  json += "\"success\":" + String(result.success ? "true" : "false") + ",";
-  json += "\"message\":\"" + EscapeJson(result.message) + "\"";
+  if (request_id == 0) {
+    json += "\"accepted\":false,";
+    json += "\"message\":\"系统忙，请稍后重试。\"";
+  } else {
+    json += "\"accepted\":true,";
+    json += "\"requestId\":" + String(request_id);
+  }
   json += "}";
+
+  server_.send(200, "application/json", json);
+}
+
+void WebAdmin::HandleModemResult() {
+  if (!CheckAuth()) return;
+
+  const String request_id_arg = server_.arg("id");
+  String json = "{";
+
+  if (request_id_arg.length() == 0) {
+    json += "\"ready\":true,";
+    json += "\"success\":false,";
+    json += "\"message\":\"缺少请求编号。\"";
+    json += "}";
+    server_.send(200, "application/json", json);
+    return;
+  }
+
+  const uint32_t request_id = static_cast<uint32_t>(request_id_arg.toInt());
+  PendingWebRequest* pending_request = FindPendingRequest(request_id);
+  if (pending_request == nullptr) {
+    json += "\"ready\":true,";
+    json += "\"success\":false,";
+    json += "\"message\":\"请求不存在或已过期。\"";
+    json += "}";
+    server_.send(200, "application/json", json);
+    return;
+  }
+
+  if (!pending_request->completed) {
+    json += "\"ready\":false";
+    json += "}";
+    server_.send(200, "application/json", json);
+    return;
+  }
+
+  json += "\"ready\":true,";
+  json += "\"success\":" + String(pending_request->success ? "true" : "false") + ",";
+  json += "\"message\":\"" + EscapeJson(pending_request->message) + "\"";
+  json += "}";
+  pending_request->inUse = false;
+  pending_request->completed = false;
+  pending_request->message = "";
 
   server_.send(200, "application/json", json);
 }
