@@ -10,6 +10,7 @@
 #include "modem.h"
 #include "notifier.h"
 #include "sms_inbox.h"
+#include "status_led.h"
 #include "task_protocol.h"
 #include "web_admin.h"
 #include "wifi_runtime.h"
@@ -26,6 +27,7 @@ constexpr uint32_t kLoopSleepMs = 100;
 constexpr uint32_t kTaskIdleDelayMs = 10;
 constexpr uint32_t kSendSmsWaitMs = 40000;
 constexpr uint32_t kProvisionButtonHoldMs = 3000;
+constexpr uint32_t kLedRefreshMs = 100;
 constexpr uint32_t kModemTaskStackBytes = 8192;
 constexpr uint32_t kAppTaskStackBytes = 12288;
 constexpr uint32_t kWebTaskStackBytes = 12288;
@@ -40,19 +42,13 @@ QueueHandle_t modem_request_queue = nullptr;
 QueueHandle_t web_modem_response_queue = nullptr;
 QueueHandle_t app_modem_response_queue = nullptr;
 QueueHandle_t app_event_queue = nullptr;
+StatusLed status_led;
 
 struct ProvisionButtonState {
   bool tracking = false;
   bool triggered = false;
   unsigned long pressed_since_ms = 0;
 };
-
-void BlinkShort(unsigned long gap_time = 500) {
-  digitalWrite(LED_BUILTIN, LOW);
-  delay(50);
-  digitalWrite(LED_BUILTIN, HIGH);
-  delay(gap_time);
-}
 
 String GetDeviceUrl() {
   if (WiFi.status() == WL_CONNECTED) {
@@ -134,6 +130,21 @@ bool QueueAppEvent(const AppEvent& event,
   }
 
   return xQueueSend(app_event_queue, &event, timeout_ticks) == pdTRUE;
+}
+
+StatusLedMode ResolveStatusLedMode(const WifiStatusSnapshot& snapshot) {
+  if (snapshot.connectInProgress ||
+      snapshot.mode == WifiRuntimeMode::TryingSavedNetworks) {
+    return StatusLedMode::Connecting;
+  }
+
+  if (snapshot.portalActive ||
+      snapshot.mode == WifiRuntimeMode::ProvisioningPortal ||
+      snapshot.mode == WifiRuntimeMode::PortalHandoff) {
+    return StatusLedMode::Provisioning;
+  }
+
+  return StatusLedMode::Off;
 }
 
 void PollProvisionButton(WifiRuntime& wifi_runtime, ProvisionButtonState& state) {
@@ -385,12 +396,23 @@ void WebTaskMain(void*) {
   static WebAdmin web_admin(config_store, shared_state, wifi_runtime, modem_request_queue,
                             web_modem_response_queue, app_event_queue);
   ProvisionButtonState provision_button_state;
+  unsigned long last_led_refresh_ms = 0;
 
   wifi_runtime.Begin();
   web_admin.Begin();
   for (;;) {
     PollProvisionButton(wifi_runtime, provision_button_state);
     wifi_runtime.Poll();
+
+    const unsigned long now = millis();
+    if (now - last_led_refresh_ms >= kLedRefreshMs) {
+      WifiStatusSnapshot snapshot;
+      wifi_runtime.GetStatusSnapshot(snapshot);
+      status_led.SetMode(ResolveStatusLedMode(snapshot));
+      last_led_refresh_ms = now;
+    }
+
+    status_led.Poll(now);
     web_admin.HandleClient();
     vTaskDelay(pdMS_TO_TICKS(kTaskIdleDelayMs));
   }
@@ -398,17 +420,15 @@ void WebTaskMain(void*) {
 
 void HaltSetup(const char* message) {
   Serial.println(message);
-  while (true) {
-    BlinkShort(100);
-  }
+  status_led.RunBlockingFaultPattern();
 }
 
 }  // namespace
 
 void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
+  status_led.Begin();
+  status_led.SetMode(StatusLedMode::Booting);
   pinMode(kBootButtonPin, INPUT_PULLUP);
-  digitalWrite(LED_BUILTIN, HIGH);
 
   Serial.begin(115200);
   delay(kStartupDelayMs);
@@ -442,8 +462,6 @@ void setup() {
                   nullptr) != pdPASS) {
     HaltSetup("Failed to create WebTask");
   }
-
-  digitalWrite(LED_BUILTIN, LOW);
 }
 
 void loop() {

@@ -82,7 +82,6 @@ class Modem {
     WaitPdu,
   };
 
-  void BlinkShort(unsigned long gap_time = 500);
   bool SendAtAndWaitOK(const char* cmd, unsigned long timeout);
   bool WaitCereg();
   void ModemPowerCycle();

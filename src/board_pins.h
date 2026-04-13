@@ -11,11 +11,8 @@ constexpr int kModemTxPin = 6;       ///< UART TX pin connected to the modem RX.
 constexpr int kModemRxPin = 7;       ///< UART RX pin connected to the modem TX.
 constexpr int kModemEnablePin = 5;   ///< Modem EN pin used for power cycling.
 constexpr int kBootButtonPin = 9;    ///< BOOT button used for manual recovery actions.
-
-#ifndef LED_BUILTIN
-/// Fallback LED pin for targets that do not define LED_BUILTIN.
-#define LED_BUILTIN 4
-#endif
+constexpr int kStatusLedPin = 4;     ///< On-board status LED pin.
+constexpr uint8_t kStatusLedOnLevel = HIGH;  ///< Electrical level that turns the LED on.
 
 constexpr size_t kSerialBufferSize = 500;         ///< Shared modem UART line buffer size.
 constexpr int kMaxPduLength = 300;                ///< Reserved maximum SMS payload length.

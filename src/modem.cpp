@@ -5,7 +5,12 @@
 
 #include "modem.h"
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+
 namespace {
+
+constexpr TickType_t kRetryYieldDelay = pdMS_TO_TICKS(500);
 
 void FillSmsMessage(SmsMessage& message, const String& sender, const String& text,
                     const String& timestamp) {
@@ -39,31 +44,31 @@ void Modem::Begin() {
 
   while (!SendAtAndWaitOK("AT", 1000)) {
     Serial.println("AT did not respond; retrying...");
-    BlinkShort();
+    vTaskDelay(kRetryYieldDelay);
   }
   Serial.println("Modem AT handshake is ready");
 
   while (!SendAtAndWaitOK("AT+CGACT=0,1", 5000)) {
     Serial.println("Failed to disable the data connection; retrying...");
-    BlinkShort();
+    vTaskDelay(kRetryYieldDelay);
   }
   Serial.println("Data connection disabled with AT+CGACT=0,1 to avoid traffic usage");
 
   while (!SendAtAndWaitOK("AT+CNMI=2,2,0,0,0", 1000)) {
     Serial.println("Failed to configure CNMI; retrying...");
-    BlinkShort();
+    vTaskDelay(kRetryYieldDelay);
   }
   Serial.println("CNMI configuration applied");
 
   while (!SendAtAndWaitOK("AT+CMGF=0", 1000)) {
     Serial.println("Failed to switch to PDU mode; retrying...");
-    BlinkShort();
+    vTaskDelay(kRetryYieldDelay);
   }
   Serial.println("PDU mode enabled");
 
   while (!WaitCereg()) {
     Serial.println("Waiting for network registration...");
-    BlinkShort();
+    vTaskDelay(kRetryYieldDelay);
   }
   Serial.println("Network registration completed");
 }
@@ -419,13 +424,6 @@ void Modem::Reset() {
 // Low-level serial helpers.
 void Modem::WritePassthroughByte(uint8_t byte) {
   serial_.write(byte);
-}
-
-void Modem::BlinkShort(unsigned long gap_time) {
-  digitalWrite(LED_BUILTIN, LOW);
-  delay(50);
-  digitalWrite(LED_BUILTIN, HIGH);
-  delay(gap_time);
 }
 
 bool Modem::SendAtAndWaitOK(const char* cmd, unsigned long timeout) {
