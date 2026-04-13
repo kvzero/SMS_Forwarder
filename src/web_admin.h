@@ -11,6 +11,7 @@
 
 #include "config_store.h"
 #include "task_protocol.h"
+#include "wifi_runtime.h"
 
 /** @brief Embedded HTTP admin interface for configuration and modem tools. */
 class WebAdmin {
@@ -19,11 +20,13 @@ class WebAdmin {
    * @brief Creates the admin web controller around the long-lived task owners.
    * @param config_store Configuration persistence owner.
    * @param shared_state Shared runtime configuration guarded by a mutex.
+   * @param wifi_runtime Wi-Fi STA/AP runtime owner.
    * @param modem_request_queue Queue used to submit modem work.
    * @param web_response_queue Queue used to receive modem results for web calls.
    * @param app_event_queue Queue used to notify the app task about config updates.
    */
   WebAdmin(ConfigStore& config_store, SharedConfigState& shared_state,
+           WifiRuntime& wifi_runtime,
            QueueHandle_t modem_request_queue, QueueHandle_t web_response_queue,
            QueueHandle_t app_event_queue);
 
@@ -44,6 +47,7 @@ class WebAdmin {
 
   bool LoadConfigSnapshot(AppConfig& config, bool* config_valid = nullptr) const;
   bool CheckAuth();
+  bool CheckProvisionAccess();
   bool SubmitModemRequest(const ModemRequest& request,
                           TickType_t timeout_ticks = pdMS_TO_TICKS(100));
   bool WaitForModemResponse(uint32_t request_id, ModemResponse& response,
@@ -61,6 +65,7 @@ class WebAdmin {
   String EscapeJson(const String& value) const;
 
   void HandleRoot();
+  void HandleAdminPage();
   void HandleToolsPage();
   void HandleFlightMode();
   void HandleATCommand();
@@ -69,9 +74,17 @@ class WebAdmin {
   void HandlePing();
   void HandleSave();
   void HandleModemResult();
+  void HandleProvisionPage();
+  void HandleProvisionStatus();
+  void HandleProvisionNetworks();
+  void HandleProvisionCredentials();
+  void HandleProvisionConnect();
+  void HandleProvisionDelete();
+  void HandleProvisionClear();
 
   ConfigStore& config_store_;
   SharedConfigState& shared_state_;
+  WifiRuntime& wifi_runtime_;
   QueueHandle_t modem_request_queue_;
   QueueHandle_t web_response_queue_;
   QueueHandle_t app_event_queue_;

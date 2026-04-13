@@ -11,6 +11,44 @@ namespace {
 
 Preferences preferences;
 
+void NormalizeWifiCredentialPool(AppConfig& config) {
+  WifiCredential normalized[kMaxWifiCredentials];
+  uint8_t normalized_count = 0;
+
+  for (uint8_t i = 0; i < config.wifiCredentialCount && i < kMaxWifiCredentials; ++i) {
+    const String ssid = config.wifiCredentials[i].ssid;
+    if (ssid.length() == 0) {
+      continue;
+    }
+
+    bool duplicate = false;
+    for (uint8_t j = 0; j < normalized_count; ++j) {
+      if (normalized[j].ssid == ssid) {
+        duplicate = true;
+        break;
+      }
+    }
+
+    if (duplicate) {
+      continue;
+    }
+
+    normalized[normalized_count] = config.wifiCredentials[i];
+    normalized_count++;
+  }
+
+  for (int i = 0; i < kMaxWifiCredentials; ++i) {
+    if (i < normalized_count) {
+      config.wifiCredentials[i] = normalized[i];
+    } else {
+      config.wifiCredentials[i].ssid = "";
+      config.wifiCredentials[i].password = "";
+    }
+  }
+
+  config.wifiCredentialCount = normalized_count;
+}
+
 }  // namespace
 
 // Validation helpers.
@@ -69,6 +107,7 @@ void ConfigStore::Save(const AppConfig& config) {
   preferences.putString("webUser", config.webUser);
   preferences.putString("webPass", config.webPass);
   preferences.putString("numBlkList", config.numberBlackList);
+  preferences.putUChar("wifiCount", config.wifiCredentialCount);
 
   for (int i = 0; i < kMaxPushChannels; ++i) {
     const String prefix = "push" + String(i);
@@ -80,6 +119,17 @@ void ConfigStore::Save(const AppConfig& config) {
     preferences.putString((prefix + "k1").c_str(), config.pushChannels[i].key1);
     preferences.putString((prefix + "k2").c_str(), config.pushChannels[i].key2);
     preferences.putString((prefix + "body").c_str(), config.pushChannels[i].customBody);
+  }
+
+  for (int i = 0; i < kMaxWifiCredentials; ++i) {
+    const String prefix = "wifi" + String(i);
+    if (i < config.wifiCredentialCount) {
+      preferences.putString((prefix + "Ssid").c_str(), config.wifiCredentials[i].ssid);
+      preferences.putString((prefix + "Pass").c_str(), config.wifiCredentials[i].password);
+    } else {
+      preferences.putString((prefix + "Ssid").c_str(), "");
+      preferences.putString((prefix + "Pass").c_str(), "");
+    }
   }
 
   preferences.end();
@@ -94,6 +144,7 @@ void ConfigStore::Load(AppConfig& config) {
   config.smtpPass = preferences.getString("smtpPass", "");
   config.smtpSendTo = preferences.getString("smtpSendTo", "");
   config.adminPhone = preferences.getString("adminPhone", "");
+  config.wifiCredentialCount = preferences.getUChar("wifiCount", 0);
   config.webUser = preferences.getString("webUser", DEFAULT_WEB_USER);
   config.webPass = preferences.getString("webPass", DEFAULT_WEB_PASS);
   config.numberBlackList = preferences.getString("numBlkList", "");
@@ -111,6 +162,13 @@ void ConfigStore::Load(AppConfig& config) {
     config.pushChannels[i].customBody = preferences.getString((prefix + "body").c_str(), "");
   }
 
+  for (int i = 0; i < kMaxWifiCredentials; ++i) {
+    const String prefix = "wifi" + String(i);
+    config.wifiCredentials[i].ssid = preferences.getString((prefix + "Ssid").c_str(), "");
+    config.wifiCredentials[i].password = preferences.getString((prefix + "Pass").c_str(), "");
+  }
+  NormalizeWifiCredentialPool(config);
+
   // Migrate the legacy single HTTP target into push channel 1 on first load.
   const String old_http_url = preferences.getString("httpUrl", "");
   if (old_http_url.length() > 0 && !config.pushChannels[0].enabled) {
@@ -125,4 +183,75 @@ void ConfigStore::Load(AppConfig& config) {
 
   preferences.end();
   Serial.println("Config loaded");
+}
+
+void ConfigStore::UpsertWifiCredential(AppConfig& config, const String& ssid,
+                                       const String& password) {
+  if (ssid.length() == 0) {
+    return;
+  }
+
+  WifiCredential updated[kMaxWifiCredentials];
+  uint8_t updated_count = 0;
+
+  updated[updated_count].ssid = ssid;
+  updated[updated_count].password = password;
+  updated_count++;
+
+  for (uint8_t i = 0; i < config.wifiCredentialCount && updated_count < kMaxWifiCredentials;
+       ++i) {
+    if (config.wifiCredentials[i].ssid == ssid) {
+      continue;
+    }
+
+    updated[updated_count] = config.wifiCredentials[i];
+    updated_count++;
+  }
+
+  config.wifiCredentialCount = updated_count;
+  for (int i = 0; i < kMaxWifiCredentials; ++i) {
+    if (i < updated_count) {
+      config.wifiCredentials[i] = updated[i];
+    } else {
+      config.wifiCredentials[i].ssid = "";
+      config.wifiCredentials[i].password = "";
+    }
+  }
+}
+
+void ConfigStore::RemoveWifiCredential(AppConfig& config, const String& ssid) {
+  if (ssid.length() == 0 || config.wifiCredentialCount == 0) {
+    return;
+  }
+
+  WifiCredential updated[kMaxWifiCredentials];
+  uint8_t updated_count = 0;
+
+  for (uint8_t i = 0; i < config.wifiCredentialCount && updated_count < kMaxWifiCredentials;
+       ++i) {
+    if (config.wifiCredentials[i].ssid == ssid) {
+      continue;
+    }
+
+    updated[updated_count] = config.wifiCredentials[i];
+    updated_count++;
+  }
+
+  config.wifiCredentialCount = updated_count;
+  for (int i = 0; i < kMaxWifiCredentials; ++i) {
+    if (i < updated_count) {
+      config.wifiCredentials[i] = updated[i];
+    } else {
+      config.wifiCredentials[i].ssid = "";
+      config.wifiCredentials[i].password = "";
+    }
+  }
+}
+
+void ConfigStore::ClearWifiCredentials(AppConfig& config) {
+  config.wifiCredentialCount = 0;
+  for (int i = 0; i < kMaxWifiCredentials; ++i) {
+    config.wifiCredentials[i].ssid = "";
+    config.wifiCredentials[i].password = "";
+  }
 }

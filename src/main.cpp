@@ -12,7 +12,7 @@
 #include "sms_inbox.h"
 #include "task_protocol.h"
 #include "web_admin.h"
-#include "wifi_config.h"
+#include "wifi_runtime.h"
 
 /**
  * @file main.cpp
@@ -25,6 +25,7 @@ constexpr uint32_t kStartupDelayMs = 1500;
 constexpr uint32_t kLoopSleepMs = 100;
 constexpr uint32_t kTaskIdleDelayMs = 10;
 constexpr uint32_t kSendSmsWaitMs = 40000;
+constexpr uint32_t kProvisionButtonHoldMs = 3000;
 constexpr uint32_t kModemTaskStackBytes = 8192;
 constexpr uint32_t kAppTaskStackBytes = 12288;
 constexpr uint32_t kWebTaskStackBytes = 12288;
@@ -40,6 +41,12 @@ QueueHandle_t web_modem_response_queue = nullptr;
 QueueHandle_t app_modem_response_queue = nullptr;
 QueueHandle_t app_event_queue = nullptr;
 
+struct ProvisionButtonState {
+  bool tracking = false;
+  bool triggered = false;
+  unsigned long pressed_since_ms = 0;
+};
+
 void BlinkShort(unsigned long gap_time = 500) {
   digitalWrite(LED_BUILTIN, LOW);
   delay(50);
@@ -48,7 +55,15 @@ void BlinkShort(unsigned long gap_time = 500) {
 }
 
 String GetDeviceUrl() {
-  return "http://" + WiFi.localIP().toString() + "/";
+  if (WiFi.status() == WL_CONNECTED) {
+    return "http://" + WiFi.localIP().toString() + "/";
+  }
+
+  if ((WiFi.getMode() & WIFI_AP) != 0) {
+    return "http://" + WiFi.softAPIP().toString() + "/";
+  }
+
+  return "http://0.0.0.0/";
 }
 
 bool LoadConfigSnapshot(AppConfig& config, bool* config_valid = nullptr) {
@@ -119,6 +134,29 @@ bool QueueAppEvent(const AppEvent& event,
   }
 
   return xQueueSend(app_event_queue, &event, timeout_ticks) == pdTRUE;
+}
+
+void PollProvisionButton(WifiRuntime& wifi_runtime, ProvisionButtonState& state) {
+  const bool pressed = digitalRead(kBootButtonPin) == LOW;
+  const unsigned long now = millis();
+
+  if (!pressed) {
+    state = ProvisionButtonState{};
+    return;
+  }
+
+  if (!state.tracking) {
+    state.tracking = true;
+    state.pressed_since_ms = now;
+    return;
+  }
+
+  if (state.triggered || now - state.pressed_since_ms < kProvisionButtonHoldMs) {
+    return;
+  }
+
+  state.triggered = true;
+  wifi_runtime.ForceProvisioningPortal();
 }
 
 void SendStartupNotice(Notifier& notifier) {
@@ -343,11 +381,16 @@ void AppTaskMain(void*) {
 }
 
 void WebTaskMain(void*) {
-  static WebAdmin web_admin(config_store, shared_state, modem_request_queue,
+  static WifiRuntime wifi_runtime(config_store, shared_state, app_event_queue);
+  static WebAdmin web_admin(config_store, shared_state, wifi_runtime, modem_request_queue,
                             web_modem_response_queue, app_event_queue);
+  ProvisionButtonState provision_button_state;
 
+  wifi_runtime.Begin();
   web_admin.Begin();
   for (;;) {
+    PollProvisionButton(wifi_runtime, provision_button_state);
+    wifi_runtime.Poll();
     web_admin.HandleClient();
     vTaskDelay(pdMS_TO_TICKS(kTaskIdleDelayMs));
   }
@@ -364,6 +407,7 @@ void HaltSetup(const char* message) {
 
 void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(kBootButtonPin, INPUT_PULLUP);
   digitalWrite(LED_BUILTIN, HIGH);
 
   Serial.begin(115200);
@@ -386,32 +430,6 @@ void setup() {
   config_store.Load(shared_state.config);
   shared_state.configValid = IsConfigValid(shared_state.config);
 
-  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
-  WiFi.begin(WIFI_SSID, WIFI_PASS, 0, nullptr, true);
-  Serial.println("Connecting to Wi-Fi");
-  Serial.println(WIFI_SSID);
-  while (WiFi.status() != WL_CONNECTED) {
-    BlinkShort();
-  }
-  Serial.println("Wi-Fi connected");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-
-  Serial.println("Syncing NTP time...");
-  configTime(0, 0, "ntp.ntsc.ac.cn", "ntp.aliyun.com", "pool.ntp.org");
-  int ntp_retry = 0;
-  while (time(nullptr) < 100000 && ntp_retry < 100) {
-    delay(100);
-    ntp_retry++;
-  }
-  if (time(nullptr) >= 100000) {
-    Serial.println("NTP sync succeeded");
-    Serial.print("Current UTC timestamp: ");
-    Serial.println(time(nullptr));
-  } else {
-    Serial.println("NTP sync failed; falling back to device time");
-  }
-
   if (xTaskCreate(ModemTaskMain, "ModemTask", kModemTaskStackBytes, nullptr, 4,
                   nullptr) != pdPASS) {
     HaltSetup("Failed to create ModemTask");
@@ -426,14 +444,6 @@ void setup() {
   }
 
   digitalWrite(LED_BUILTIN, LOW);
-
-  if (shared_state.configValid) {
-    AppEvent event;
-    event.type = AppEventType::StartupNotice;
-    if (!QueueAppEvent(event, pdMS_TO_TICKS(1000))) {
-      Serial.println("Failed to queue the startup notice event");
-    }
-  }
 }
 
 void loop() {

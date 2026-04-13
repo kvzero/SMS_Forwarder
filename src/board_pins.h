@@ -10,6 +10,7 @@
 constexpr int kModemTxPin = 6;       ///< UART TX pin connected to the modem RX.
 constexpr int kModemRxPin = 7;       ///< UART RX pin connected to the modem TX.
 constexpr int kModemEnablePin = 5;   ///< Modem EN pin used for power cycling.
+constexpr int kBootButtonPin = 9;    ///< BOOT button used for manual recovery actions.
 
 #ifndef LED_BUILTIN
 /// Fallback LED pin for targets that do not define LED_BUILTIN.

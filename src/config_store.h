@@ -23,6 +23,7 @@ enum PushType {
 };
 
 constexpr int kMaxPushChannels = 5;  ///< Number of configurable push channels.
+constexpr int kMaxWifiCredentials = 5;  ///< Number of saved Wi-Fi credentials.
 
 /** Default web credentials used until the user saves custom values. */
 #define DEFAULT_WEB_USER "admin"
@@ -39,6 +40,12 @@ struct PushChannel {
   String customBody;   ///< JSON body template used by PUSH_TYPE_CUSTOM.
 };
 
+/** @brief One saved Wi-Fi credential. */
+struct WifiCredential {
+  String ssid;       ///< Wi-Fi SSID.
+  String password;   ///< Wi-Fi password. Empty when the network is open.
+};
+
 /** @brief Runtime configuration persisted in NVS. */
 struct AppConfig {
   String smtpServer;                             ///< SMTP host name.
@@ -48,6 +55,8 @@ struct AppConfig {
   String smtpSendTo;                            ///< Destination email address for alerts.
   String adminPhone;                            ///< Phone number allowed to issue SMS commands.
   PushChannel pushChannels[kMaxPushChannels];   ///< Configured push notification channels.
+  WifiCredential wifiCredentials[kMaxWifiCredentials];  ///< Saved Wi-Fi credentials.
+  uint8_t wifiCredentialCount = 0;              ///< Number of valid entries in wifiCredentials.
   String webUser;                               ///< HTTP Basic Auth user name.
   String webPass;                               ///< HTTP Basic Auth password.
   String numberBlackList;                       ///< Newline-delimited ignored sender list.
@@ -86,4 +95,25 @@ class ConfigStore {
    * @param config Source configuration instance.
    */
   void Save(const AppConfig& config);
+
+  /**
+   * @brief Inserts or promotes a Wi-Fi credential to the front of the pool.
+   * @param config Configuration object to mutate in memory.
+   * @param ssid Target SSID.
+   * @param password Password associated with the SSID.
+   */
+  void UpsertWifiCredential(AppConfig& config, const String& ssid, const String& password);
+
+  /**
+   * @brief Removes one saved Wi-Fi credential by SSID.
+   * @param config Configuration object to mutate in memory.
+   * @param ssid Target SSID.
+   */
+  void RemoveWifiCredential(AppConfig& config, const String& ssid);
+
+  /**
+   * @brief Clears every saved Wi-Fi credential from the pool.
+   * @param config Configuration object to mutate in memory.
+   */
+  void ClearWifiCredentials(AppConfig& config);
 };

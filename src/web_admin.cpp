@@ -7,6 +7,7 @@
 
 #include <WiFi.h>
 
+#include "wifi_pages.h"
 #include "web_pages.h"
 
 namespace {
@@ -15,13 +16,29 @@ constexpr TickType_t kWebSyncPollSlice = pdMS_TO_TICKS(50);
 constexpr unsigned long kPendingRequestLifetimeMs = 60000;
 constexpr TickType_t kSendSmsWaitTicks = pdMS_TO_TICKS(40000);
 
+const char* WifiModeToString(WifiRuntimeMode mode) {
+  switch (mode) {
+    case WifiRuntimeMode::TryingSavedNetworks:
+      return "trying";
+    case WifiRuntimeMode::Connected:
+      return "connected";
+    case WifiRuntimeMode::PortalHandoff:
+      return "handoff";
+    case WifiRuntimeMode::ProvisioningPortal:
+    default:
+      return "portal";
+  }
+}
+
 }  // namespace
 
 WebAdmin::WebAdmin(ConfigStore& config_store, SharedConfigState& shared_state,
+                   WifiRuntime& wifi_runtime,
                    QueueHandle_t modem_request_queue, QueueHandle_t web_response_queue,
                    QueueHandle_t app_event_queue)
     : config_store_(config_store),
       shared_state_(shared_state),
+      wifi_runtime_(wifi_runtime),
       modem_request_queue_(modem_request_queue),
       web_response_queue_(web_response_queue),
       app_event_queue_(app_event_queue),
@@ -31,6 +48,7 @@ WebAdmin::WebAdmin(ConfigStore& config_store, SharedConfigState& shared_state,
 // HTTP server lifecycle and shared helpers.
 void WebAdmin::Begin() {
   server_.on("/", [this]() { HandleRoot(); });
+  server_.on("/admin", [this]() { HandleAdminPage(); });
   server_.on("/save", HTTP_POST, [this]() { HandleSave(); });
   server_.on("/tools", [this]() { HandleToolsPage(); });
   server_.on("/sms", [this]() { HandleToolsPage(); });
@@ -40,6 +58,13 @@ void WebAdmin::Begin() {
   server_.on("/flight", [this]() { HandleFlightMode(); });
   server_.on("/at", [this]() { HandleATCommand(); });
   server_.on("/modem_result", [this]() { HandleModemResult(); });
+  server_.on("/provision", [this]() { HandleProvisionPage(); });
+  server_.on("/provision/status", [this]() { HandleProvisionStatus(); });
+  server_.on("/provision/networks", [this]() { HandleProvisionNetworks(); });
+  server_.on("/provision/credentials", [this]() { HandleProvisionCredentials(); });
+  server_.on("/provision/connect", HTTP_POST, [this]() { HandleProvisionConnect(); });
+  server_.on("/provision/delete", HTTP_POST, [this]() { HandleProvisionDelete(); });
+  server_.on("/provision/clear", HTTP_POST, [this]() { HandleProvisionClear(); });
   server_.begin();
   Serial.println("HTTP server started");
 }
@@ -301,8 +326,24 @@ bool WebAdmin::CheckAuth() {
   return true;
 }
 
+bool WebAdmin::CheckProvisionAccess() {
+  if (wifi_runtime_.AllowsOpenProvisioningAccess(server_.client().localIP())) {
+    return true;
+  }
+
+  return CheckAuth();
+}
 // Page rendering.
 void WebAdmin::HandleRoot() {
+  if (wifi_runtime_.ShouldServeProvisioningPortal()) {
+    HandleProvisionPage();
+    return;
+  }
+
+  HandleAdminPage();
+}
+
+void WebAdmin::HandleAdminPage() {
   if (!CheckAuth()) return;
 
   AppConfig config;
@@ -312,7 +353,7 @@ void WebAdmin::HandleRoot() {
   }
 
   String html = String(kConfigPageHtml);
-  html.replace("%IP%", WiFi.localIP().toString());
+  html.replace("%IP%", wifi_runtime_.GetPrimaryIpString());
   html.replace("%WEB_USER%", config.webUser);
   html.replace("%WEB_PASS%", config.webPass);
   html.replace("%SMTP_SERVER%", config.smtpServer);
@@ -394,7 +435,7 @@ void WebAdmin::HandleToolsPage() {
   if (!CheckAuth()) return;
 
   String html = String(kToolsPageHtml);
-  html.replace("%IP%", WiFi.localIP().toString());
+  html.replace("%IP%", wifi_runtime_.GetPrimaryIpString());
   server_.send(200, "text/html", html);
 }
 
@@ -977,6 +1018,132 @@ void WebAdmin::HandleModemResult() {
   pending_request->inUse = false;
   pending_request->completed = false;
   pending_request->message = "";
+
+  server_.send(200, "application/json", json);
+}
+
+void WebAdmin::HandleProvisionPage() {
+  if (!CheckProvisionAccess()) return;
+
+  server_.send(200, "text/html", String(kProvisionPageHtml));
+}
+
+void WebAdmin::HandleProvisionStatus() {
+  if (!CheckProvisionAccess()) return;
+
+  WifiStatusSnapshot snapshot;
+  wifi_runtime_.GetStatusSnapshot(snapshot);
+
+  String json = "{";
+  json += "\"mode\":\"" + String(WifiModeToString(snapshot.mode)) + "\",";
+  json += "\"portalActive\":" + String(snapshot.portalActive ? "true" : "false") + ",";
+  json += "\"staConnected\":" + String(snapshot.staConnected ? "true" : "false") + ",";
+  json += "\"connectInProgress\":" + String(snapshot.connectInProgress ? "true" : "false") + ",";
+  json += "\"scanInProgress\":" + String(snapshot.scanInProgress ? "true" : "false") + ",";
+  json += "\"message\":\"" + EscapeJson(snapshot.message) + "\",";
+  json += "\"attemptingSsid\":\"" + EscapeJson(snapshot.attemptingSsid) + "\",";
+  json += "\"staSsid\":\"" + EscapeJson(snapshot.staSsid) + "\",";
+  json += "\"staIp\":\"" + EscapeJson(snapshot.staIp) + "\",";
+  json += "\"apSsid\":\"" + EscapeJson(snapshot.apSsid) + "\",";
+  json += "\"apIp\":\"" + EscapeJson(snapshot.apIp) + "\",";
+  json += "\"redirectIp\":\"" + EscapeJson(snapshot.redirectIp) + "\",";
+  json += "\"handoffRemainingSec\":" + String(snapshot.handoffRemainingSec);
+  json += "}";
+
+  server_.send(200, "application/json", json);
+}
+
+void WebAdmin::HandleProvisionNetworks() {
+  if (!CheckProvisionAccess()) return;
+
+  VisibleWifiList list;
+  wifi_runtime_.GetVisibleNetworks(list);
+
+  String json = "{";
+  json += "\"scanInProgress\":" + String(list.scanInProgress ? "true" : "false") + ",";
+  json += "\"lastUpdatedMs\":" + String(list.lastUpdatedMs) + ",";
+  json += "\"networks\":[";
+  for (uint8_t i = 0; i < list.count; ++i) {
+    if (i > 0) {
+      json += ",";
+    }
+
+    json += "{";
+    json += "\"ssid\":\"" + EscapeJson(list.items[i].ssid) + "\",";
+    json += "\"rssi\":" + String(list.items[i].rssi) + ",";
+    json += "\"secured\":" + String(list.items[i].secured ? "true" : "false") + ",";
+    json += "\"saved\":" + String(list.items[i].saved ? "true" : "false") + ",";
+    json += "\"current\":" + String(list.items[i].current ? "true" : "false");
+    json += "}";
+  }
+  json += "]}";
+
+  server_.send(200, "application/json", json);
+}
+
+void WebAdmin::HandleProvisionCredentials() {
+  if (!CheckProvisionAccess()) return;
+
+  SavedWifiList list;
+  wifi_runtime_.GetSavedCredentials(list);
+
+  String json = "{";
+  json += "\"credentials\":[";
+  for (uint8_t i = 0; i < list.count; ++i) {
+    if (i > 0) {
+      json += ",";
+    }
+
+    json += "{";
+    json += "\"ssid\":\"" + EscapeJson(list.items[i].ssid) + "\",";
+    json += "\"current\":" + String(list.items[i].current ? "true" : "false");
+    json += "}";
+  }
+  json += "]}";
+
+  server_.send(200, "application/json", json);
+}
+
+void WebAdmin::HandleProvisionConnect() {
+  if (!CheckProvisionAccess()) return;
+
+  String ssid = server_.arg("ssid");
+  String password = server_.arg("password");
+  String message;
+  const bool success = wifi_runtime_.SubmitCredential(ssid, password, message);
+
+  String json = "{";
+  json += "\"success\":" + String(success ? "true" : "false") + ",";
+  json += "\"message\":\"" + EscapeJson(message) + "\"";
+  json += "}";
+
+  server_.send(200, "application/json", json);
+}
+
+void WebAdmin::HandleProvisionDelete() {
+  if (!CheckProvisionAccess()) return;
+
+  String message;
+  const bool success = wifi_runtime_.DeleteCredential(server_.arg("ssid"), message);
+
+  String json = "{";
+  json += "\"success\":" + String(success ? "true" : "false") + ",";
+  json += "\"message\":\"" + EscapeJson(message) + "\"";
+  json += "}";
+
+  server_.send(200, "application/json", json);
+}
+
+void WebAdmin::HandleProvisionClear() {
+  if (!CheckProvisionAccess()) return;
+
+  String message;
+  const bool success = wifi_runtime_.ClearCredentials(message);
+
+  String json = "{";
+  json += "\"success\":" + String(success ? "true" : "false") + ",";
+  json += "\"message\":\"" + EscapeJson(message) + "\"";
+  json += "}";
 
   server_.send(200, "application/json", json);
 }
