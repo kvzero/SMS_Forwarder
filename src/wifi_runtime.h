@@ -138,6 +138,23 @@ class WifiRuntime {
   bool ClearCredentials(String& message);
 
  private:
+  /**
+   * @brief Temporary scan owner for one full channel-by-channel scan cycle.
+   *
+   * The published UI list stays untouched while a cycle is running. Results are
+   * accumulated here and only published after the final channel completes so
+   * the portal keeps showing one stable list instead of partial updates.
+   */
+  struct ScanCycleState {
+    bool active = false;
+    bool channelInProgress = false;
+    bool channelStartPending = false;
+    uint8_t currentChannel = 0;
+    uint8_t finalChannel = 0;
+    VisibleWifiNetwork items[kMaxVisibleWifiNetworks];
+    uint8_t count = 0;
+  };
+
   struct PendingCredential {
     bool valid = false;
     String ssid;
@@ -158,10 +175,15 @@ class WifiRuntime {
   void StopPortal();
   void StartHandoff(const String& message);
 
+  bool ResolveScanChannelRange(uint8_t& start_channel, uint8_t& end_channel) const;
+  void ResetScanCycle();
+  bool StartChannelScan(uint8_t channel);
+  void FinalizeScanCycle(unsigned long now, bool publish_results);
   void BeginScan(unsigned long now);
   void PollScan(unsigned long now);
-  void StoreScanResult(const String& ssid, int32_t rssi, bool secured,
-                       const AppConfig& config, const String& current_ssid);
+  void StoreScanResult(ScanCycleState& cycle, const String& ssid, int32_t rssi,
+                       bool secured, const AppConfig& config,
+                       const String& current_ssid);
 
   void StartNtpSync();
   void PollNtpSync(unsigned long now);
@@ -186,6 +208,7 @@ class WifiRuntime {
   unsigned long last_scan_request_ms_;
   unsigned long ntp_sync_started_ms_;
   PendingCredential active_candidate_;
+  ScanCycleState scan_cycle_;
   VisibleWifiList visible_networks_;
   String ap_ssid_;
   String status_message_;

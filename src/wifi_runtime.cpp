@@ -5,6 +5,7 @@
 
 #include "wifi_runtime.h"
 
+#include <esp_wifi.h>
 #include <esp_system.h>
 
 namespace {
@@ -15,6 +16,9 @@ constexpr unsigned long kPortalHandoffMs = 60000;
 constexpr unsigned long kScanIntervalMs = 10000;
 constexpr unsigned long kNtpSyncTimeoutMs = 10000;
 constexpr uint32_t kScanMaxMsPerChannel = 600;
+constexpr uint8_t kFallbackScanStartChannel = 1;
+constexpr uint8_t kFallbackScanEndChannel = 13;
+constexpr uint8_t kMaxSupportedScanChannel = 14;
 
 bool QueueAppEvent(QueueHandle_t queue, const AppEvent& event,
                    TickType_t timeout_ticks = pdMS_TO_TICKS(100)) {
@@ -434,6 +438,7 @@ void WifiRuntime::StopPortal() {
 
   WiFi.softAPdisconnect(true);
   portal_active_ = false;
+  ResetScanCycle();
   visible_networks_.scanInProgress = false;
   Serial.println("Provisioning AP stopped");
 
@@ -448,6 +453,62 @@ void WifiRuntime::StartHandoff(const String& message) {
   status_message_ = message;
 }
 
+bool WifiRuntime::ResolveScanChannelRange(uint8_t& start_channel,
+                                          uint8_t& end_channel) const {
+  wifi_country_t country{};
+  if (esp_wifi_get_country(&country) == ESP_OK && country.nchan > 0 &&
+      country.schan > 0) {
+    start_channel = country.schan;
+
+    const uint16_t computed_end =
+        static_cast<uint16_t>(country.schan) + country.nchan - 1;
+    end_channel = computed_end > kMaxSupportedScanChannel
+                      ? kMaxSupportedScanChannel
+                      : static_cast<uint8_t>(computed_end);
+
+    if (end_channel >= start_channel) {
+      return true;
+    }
+  }
+
+  start_channel = kFallbackScanStartChannel;
+  end_channel = kFallbackScanEndChannel;
+  return false;
+}
+
+void WifiRuntime::ResetScanCycle() {
+  scan_cycle_ = ScanCycleState{};
+}
+
+bool WifiRuntime::StartChannelScan(uint8_t channel) {
+  const int scan_result =
+      WiFi.scanNetworks(true, false, false, kScanMaxMsPerChannel, channel);
+  if (scan_result == WIFI_SCAN_FAILED) {
+    return false;
+  }
+
+  scan_cycle_.channelInProgress = true;
+  scan_cycle_.channelStartPending = false;
+  return true;
+}
+
+void WifiRuntime::FinalizeScanCycle(unsigned long now, bool publish_results) {
+  if (publish_results) {
+    VisibleWifiList published_results;
+    published_results.count = scan_cycle_.count;
+    published_results.lastUpdatedMs = now;
+
+    for (uint8_t i = 0; i < scan_cycle_.count; ++i) {
+      published_results.items[i] = scan_cycle_.items[i];
+    }
+
+    visible_networks_ = published_results;
+  }
+
+  visible_networks_.scanInProgress = false;
+  ResetScanCycle();
+}
+
 void WifiRuntime::BeginScan(unsigned long now) {
   if (!portal_active_ || visible_networks_.scanInProgress) {
     return;
@@ -457,16 +518,36 @@ void WifiRuntime::BeginScan(unsigned long now) {
     return;
   }
 
-  const int scan_result = WiFi.scanNetworks(true, true, false, kScanMaxMsPerChannel);
+  uint8_t start_channel = kFallbackScanStartChannel;
+  uint8_t end_channel = kFallbackScanEndChannel;
+  ResolveScanChannelRange(start_channel, end_channel);
 
-  if (scan_result != WIFI_SCAN_FAILED) {
-    visible_networks_.scanInProgress = true;
-    last_scan_request_ms_ = now;
-  }
+  ResetScanCycle();
+  scan_cycle_.active = true;
+  scan_cycle_.channelStartPending = true;
+  scan_cycle_.currentChannel = start_channel;
+  scan_cycle_.finalChannel = end_channel;
+
+  visible_networks_.scanInProgress = true;
+  last_scan_request_ms_ = now;
 }
 
 void WifiRuntime::PollScan(unsigned long now) {
   if (!visible_networks_.scanInProgress) {
+    return;
+  }
+
+  if (!scan_cycle_.active) {
+    FinalizeScanCycle(now, false);
+    return;
+  }
+
+  // Start each channel on a fresh WebTask iteration so the HTTP handler gets a
+  // chance to run between channels instead of chaining one long radio burst.
+  if (scan_cycle_.channelStartPending && !scan_cycle_.channelInProgress) {
+    if (!StartChannelScan(scan_cycle_.currentChannel)) {
+      FinalizeScanCycle(now, false);
+    }
     return;
   }
 
@@ -475,36 +556,49 @@ void WifiRuntime::PollScan(unsigned long now) {
     return;
   }
 
-  visible_networks_ = VisibleWifiList{};
-  visible_networks_.lastUpdatedMs = now;
+  scan_cycle_.channelInProgress = false;
+
+  if (scan_state == WIFI_SCAN_FAILED) {
+    WiFi.scanDelete();
+    FinalizeScanCycle(now, false);
+    return;
+  }
 
   AppConfig config;
   LoadConfigSnapshot(config);
   const String current_ssid = WiFi.status() == WL_CONNECTED ? WiFi.SSID() : "";
 
-  if (scan_state > 0) {
-    for (int i = 0; i < scan_state; ++i) {
-      StoreScanResult(WiFi.SSID(i), WiFi.RSSI(i), WiFi.encryptionType(i) != WIFI_AUTH_OPEN,
-                      config, current_ssid);
-    }
+  for (int i = 0; i < scan_state; ++i) {
+    StoreScanResult(scan_cycle_, WiFi.SSID(i), WiFi.RSSI(i),
+                    WiFi.encryptionType(i) != WIFI_AUTH_OPEN, config, current_ssid);
   }
 
   WiFi.scanDelete();
+
+  if (scan_cycle_.currentChannel < scan_cycle_.finalChannel) {
+    ++scan_cycle_.currentChannel;
+    scan_cycle_.channelStartPending = true;
+    return;
+  }
+
+  FinalizeScanCycle(now, true);
 }
 
-void WifiRuntime::StoreScanResult(const String& ssid, int32_t rssi, bool secured,
-                                  const AppConfig& config, const String& current_ssid) {
+void WifiRuntime::StoreScanResult(ScanCycleState& cycle, const String& ssid,
+                                  int32_t rssi, bool secured,
+                                  const AppConfig& config,
+                                  const String& current_ssid) {
   if (ssid.length() == 0) {
     return;
   }
 
-  for (uint8_t i = 0; i < visible_networks_.count; ++i) {
-    if (visible_networks_.items[i].ssid == ssid) {
-      if (rssi > visible_networks_.items[i].rssi) {
-        visible_networks_.items[i].rssi = rssi;
-        visible_networks_.items[i].secured = secured;
+  for (uint8_t i = 0; i < cycle.count; ++i) {
+    if (cycle.items[i].ssid == ssid) {
+      if (rssi > cycle.items[i].rssi) {
+        cycle.items[i].rssi = rssi;
+        cycle.items[i].secured = secured;
       }
-      visible_networks_.items[i].current = ssid == current_ssid;
+      cycle.items[i].current = ssid == current_ssid;
       return;
     }
   }
@@ -522,31 +616,31 @@ void WifiRuntime::StoreScanResult(const String& ssid, int32_t rssi, bool secured
     }
   }
 
-  if (visible_networks_.count < kMaxVisibleWifiNetworks) {
-    visible_networks_.items[visible_networks_.count++] = network;
+  if (cycle.count < kMaxVisibleWifiNetworks) {
+    cycle.items[cycle.count++] = network;
   } else {
     uint8_t weakest_index = 0;
-    for (uint8_t i = 1; i < visible_networks_.count; ++i) {
-      if (visible_networks_.items[i].rssi < visible_networks_.items[weakest_index].rssi) {
+    for (uint8_t i = 1; i < cycle.count; ++i) {
+      if (cycle.items[i].rssi < cycle.items[weakest_index].rssi) {
         weakest_index = i;
       }
     }
 
-    if (rssi > visible_networks_.items[weakest_index].rssi) {
-      visible_networks_.items[weakest_index] = network;
+    if (rssi > cycle.items[weakest_index].rssi) {
+      cycle.items[weakest_index] = network;
     } else {
       return;
     }
   }
 
-  for (uint8_t i = 1; i < visible_networks_.count; ++i) {
-    VisibleWifiNetwork current = visible_networks_.items[i];
+  for (uint8_t i = 1; i < cycle.count; ++i) {
+    VisibleWifiNetwork current = cycle.items[i];
     int j = i - 1;
-    while (j >= 0 && visible_networks_.items[j].rssi < current.rssi) {
-      visible_networks_.items[j + 1] = visible_networks_.items[j];
+    while (j >= 0 && cycle.items[j].rssi < current.rssi) {
+      cycle.items[j + 1] = cycle.items[j];
       --j;
     }
-    visible_networks_.items[j + 1] = current;
+    cycle.items[j + 1] = current;
   }
 }
 
