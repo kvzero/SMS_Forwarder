@@ -218,11 +218,11 @@ static const char kProvisionPageHtml[] = R"rawliteral(
   </div>
 
   <script>
-    var kStatusRequestTimeoutMs = 5000;
-    var kStatusDisconnectThresholdMs = 7000;
-    var kScanDisconnectThresholdMs = 12000;
-    var kHandoffDisconnectThresholdMs = 4000;
-    var kBackgroundRequestTimeoutMs = 5000;
+    var kStatusRequestTimeoutMs = 2000;
+    var kStatusDisconnectThresholdMs = 3000;
+    var kScanDisconnectThresholdMs = 3000;
+    var kHandoffDisconnectThresholdMs = 5500;
+    var kBackgroundRequestTimeoutMs = 2000;
     var kStatusFailureThreshold = 3;
     var kScanFailureThreshold = 4;
 

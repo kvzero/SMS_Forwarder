@@ -12,7 +12,7 @@ namespace {
 
 constexpr unsigned long kConnectTimeoutMs = 15000;
 constexpr unsigned long kSavedRetryIntervalMs = 30000;
-constexpr unsigned long kPortalHandoffMs = 60000;
+constexpr unsigned long kPortalHandoffMs = 120000;
 constexpr unsigned long kScanIntervalMs = 10000;
 constexpr unsigned long kNtpSyncTimeoutMs = 10000;
 constexpr uint32_t kScanMaxMsPerChannel = 600;
