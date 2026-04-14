@@ -138,6 +138,12 @@ class WifiRuntime {
   bool ClearCredentials(String& message);
 
  private:
+  enum class ScanCyclePurpose : uint8_t {
+    None,
+    VisibleList,
+    StartupDiscovery,
+  };
+
   /**
    * @brief Temporary scan owner for one full channel-by-channel scan cycle.
    *
@@ -149,10 +155,21 @@ class WifiRuntime {
     bool active = false;
     bool channelInProgress = false;
     bool channelStartPending = false;
+    ScanCyclePurpose purpose = ScanCyclePurpose::None;
     uint8_t currentChannel = 0;
     uint8_t finalChannel = 0;
     VisibleWifiNetwork items[kMaxVisibleWifiNetworks];
     uint8_t count = 0;
+  };
+
+  struct SavedAttemptQueue {
+    WifiCredential items[kMaxWifiCredentials];
+    uint8_t count = 0;
+    uint8_t nextIndex = 0;
+  };
+
+  struct StartupDiscoveryState {
+    bool active = false;
   };
 
   struct PendingCredential {
@@ -165,8 +182,17 @@ class WifiRuntime {
   void SaveConfigSnapshot(const AppConfig& config);
   void CancelConnectAttempt(bool disconnect_sta);
 
-  void StartSavedCredentialCycle(bool keep_portal_active);
-  bool StartNextSavedCredentialAttempt();
+  void ResetSavedAttemptQueue();
+  bool QueueAttemptCandidate(const WifiCredential& credential);
+  void CollectAttemptCandidatesFromNetworks(const VisibleWifiNetwork* networks,
+                                           uint8_t count, const AppConfig& config);
+  bool StartNextQueuedAttempt();
+  void ResetStartupDiscovery();
+  void StartStartupDiscovery();
+  void FinalizeStartupDiscovery(unsigned long now, bool round_succeeded);
+  void TryPortalAutoRecovery(unsigned long now);
+  void EnterProvisioningPortal(const String& message, unsigned long now,
+                               unsigned long retry_delay_ms);
   void StartConnectAttempt(const String& ssid, const String& password);
   void HandleConnectAttempt(unsigned long now);
   void HandleConnected(unsigned long now);
@@ -175,6 +201,7 @@ class WifiRuntime {
   void StopPortal();
   void StartHandoff(const String& message);
 
+  bool StartScanCycle(ScanCyclePurpose purpose, unsigned long now);
   bool ResolveScanChannelRange(uint8_t& start_channel, uint8_t& end_channel) const;
   void ResetScanCycle();
   bool StartChannelScan(uint8_t channel);
@@ -201,13 +228,14 @@ class WifiRuntime {
   bool startup_notice_sent_;
   bool ntp_sync_in_progress_;
   bool ntp_sync_completed_;
-  int next_saved_index_;
   unsigned long connect_started_ms_;
   unsigned long next_saved_retry_ms_;
   unsigned long handoff_deadline_ms_;
   unsigned long last_scan_request_ms_;
   unsigned long ntp_sync_started_ms_;
   PendingCredential active_candidate_;
+  SavedAttemptQueue saved_attempt_queue_;
+  StartupDiscoveryState startup_discovery_;
   ScanCycleState scan_cycle_;
   VisibleWifiList visible_networks_;
   String ap_ssid_;

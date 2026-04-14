@@ -5,8 +5,8 @@
 
 #include "wifi_runtime.h"
 
-#include <esp_wifi.h>
 #include <esp_system.h>
+#include <esp_wifi.h>
 
 namespace {
 
@@ -42,7 +42,6 @@ WifiRuntime::WifiRuntime(ConfigStore& config_store, SharedConfigState& shared_st
       startup_notice_sent_(false),
       ntp_sync_in_progress_(false),
       ntp_sync_completed_(false),
-      next_saved_index_(0),
       connect_started_ms_(0),
       next_saved_retry_ms_(0),
       handoff_deadline_ms_(0),
@@ -55,8 +54,9 @@ void WifiRuntime::Begin() {
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
 
   ap_ssid_ = BuildApSsid();
-  status_message_ = "正在尝试连接已保存的 Wi-Fi...";
-  StartSavedCredentialCycle(false);
+  visible_networks_ = VisibleWifiList{};
+  status_message_ = "正在查找已保存的 Wi-Fi...";
+  StartStartupDiscovery();
 }
 
 void WifiRuntime::Poll() {
@@ -67,13 +67,14 @@ void WifiRuntime::Poll() {
   } else if (mode_ == WifiRuntimeMode::Connected || mode_ == WifiRuntimeMode::PortalHandoff) {
     HandleConnected(now);
   } else if (mode_ == WifiRuntimeMode::ProvisioningPortal && now >= next_saved_retry_ms_) {
-    StartSavedCredentialCycle(true);
+    TryPortalAutoRecovery(now);
   }
 
-  if (portal_active_) {
-    if (!connect_in_progress_) {
-      BeginScan(now);
-    }
+  if (portal_active_ && !connect_in_progress_ && !scan_cycle_.active) {
+    BeginScan(now);
+  }
+
+  if (scan_cycle_.active || visible_networks_.scanInProgress) {
     PollScan(now);
   }
 
@@ -118,9 +119,8 @@ void WifiRuntime::GetStatusSnapshot(WifiStatusSnapshot& snapshot) const {
   snapshot.staIp = snapshot.staConnected ? WiFi.localIP().toString() : "";
   snapshot.apSsid = ap_ssid_;
   snapshot.apIp = portal_active_ ? WiFi.softAPIP().toString() : "";
-  snapshot.redirectIp = mode_ == WifiRuntimeMode::PortalHandoff
-                            ? WiFi.localIP().toString()
-                            : "";
+  snapshot.redirectIp =
+      mode_ == WifiRuntimeMode::PortalHandoff ? WiFi.localIP().toString() : "";
   snapshot.handoffRemainingSec =
       (mode_ == WifiRuntimeMode::PortalHandoff && handoff_deadline_ms_ > millis())
           ? static_cast<uint32_t>((handoff_deadline_ms_ - millis() + 999) / 1000)
@@ -152,11 +152,8 @@ void WifiRuntime::ForceProvisioningPortal() {
     CancelConnectAttempt(true);
   }
 
-  EnsurePortalStarted();
-  mode_ = WifiRuntimeMode::ProvisioningPortal;
-  handoff_deadline_ms_ = 0;
-  next_saved_retry_ms_ = millis() + kSavedRetryIntervalMs;
-  status_message_ = "Provisioning portal forced by BOOT button.";
+  EnterProvisioningPortal("已通过 BOOT 按键强制打开配网热点。", millis(),
+                          kSavedRetryIntervalMs);
   Serial.println("Provisioning portal forced by BOOT button");
 }
 
@@ -169,9 +166,11 @@ bool WifiRuntime::SubmitCredential(const String& raw_ssid, const String& passwor
     return false;
   }
 
+  ResetStartupDiscovery();
+  ResetSavedAttemptQueue();
   EnsurePortalStarted();
   StartConnectAttempt(ssid, password);
-  message = "已开始连接 " + ssid + "，请稍候...";
+  message = "已开始连接 " + ssid + "，请稍候。";
   return true;
 }
 
@@ -205,7 +204,8 @@ bool WifiRuntime::DeleteCredential(const String& raw_ssid, String& message) {
 
   if (removed_active_candidate) {
     CancelConnectAttempt(true);
-    StartSavedCredentialCycle(true);
+    EnterProvisioningPortal("已删除该网络，设备正在返回配网模式。", millis(),
+                            kSavedRetryIntervalMs);
     message = "已删除网络 " + ssid + "，设备正在返回配网模式。";
     return true;
   }
@@ -214,8 +214,9 @@ bool WifiRuntime::DeleteCredential(const String& raw_ssid, String& message) {
     Serial.println("Removed the currently connected Wi-Fi: " + ssid);
     WiFi.disconnect(false, false);
     delay(50);
-    StartSavedCredentialCycle(true);
-    message = "已删除当前联网 " + ssid + "，设备正在断开并返回配网模式。";
+    EnterProvisioningPortal("已删除当前连接网络，设备正在返回配网模式。", millis(),
+                            kSavedRetryIntervalMs);
+    message = "已删除当前连接的网络 " + ssid + "，设备正在断开并返回配网模式。";
     return true;
   }
 
@@ -233,8 +234,8 @@ bool WifiRuntime::ClearCredentials(String& message) {
   config_store_.ClearWifiCredentials(config);
   SaveConfigSnapshot(config);
   CancelConnectAttempt(true);
+  EnterProvisioningPortal("已清空所有已保存网络。", millis(), kSavedRetryIntervalMs);
   message = "已清空所有已保存网络。";
-  StartSavedCredentialCycle(true);
   return true;
 }
 
@@ -278,37 +279,52 @@ void WifiRuntime::CancelConnectAttempt(bool disconnect_sta) {
   delay(50);
 }
 
-void WifiRuntime::StartSavedCredentialCycle(bool keep_portal_active) {
-  mode_ = WifiRuntimeMode::TryingSavedNetworks;
-  connect_in_progress_ = false;
-  active_candidate_ = PendingCredential{};
-  next_saved_index_ = 0;
-  status_message_ = "正在尝试连接已保存的 Wi-Fi...";
-
-  if (keep_portal_active) {
-    EnsurePortalStarted();
-  } else {
-    StopPortal();
-    WiFi.mode(WIFI_STA);
-  }
-
-  if (!StartNextSavedCredentialAttempt()) {
-    EnsurePortalStarted();
-    mode_ = WifiRuntimeMode::ProvisioningPortal;
-    status_message_ = "未连接到任何 Wi-Fi，请使用热点进行配网。";
-    next_saved_retry_ms_ = millis() + kSavedRetryIntervalMs;
-  }
+void WifiRuntime::ResetSavedAttemptQueue() {
+  saved_attempt_queue_ = SavedAttemptQueue{};
 }
 
-bool WifiRuntime::StartNextSavedCredentialAttempt() {
-  AppConfig config;
-  if (!LoadConfigSnapshot(config)) {
-    status_message_ = "读取 Wi-Fi 配置失败。";
+bool WifiRuntime::QueueAttemptCandidate(const WifiCredential& credential) {
+  if (credential.ssid.length() == 0) {
     return false;
   }
 
-  while (next_saved_index_ < config.wifiCredentialCount) {
-    const WifiCredential credential = config.wifiCredentials[next_saved_index_++];
+  for (uint8_t i = 0; i < saved_attempt_queue_.count; ++i) {
+    if (saved_attempt_queue_.items[i].ssid == credential.ssid) {
+      return false;
+    }
+  }
+
+  if (saved_attempt_queue_.count >= kMaxWifiCredentials) {
+    return false;
+  }
+
+  saved_attempt_queue_.items[saved_attempt_queue_.count++] = credential;
+  return true;
+}
+
+void WifiRuntime::CollectAttemptCandidatesFromNetworks(const VisibleWifiNetwork* networks,
+                                                       uint8_t count,
+                                                       const AppConfig& config) {
+  for (uint8_t credential_index = 0; credential_index < config.wifiCredentialCount;
+       ++credential_index) {
+    const WifiCredential& credential = config.wifiCredentials[credential_index];
+    if (credential.ssid.length() == 0) {
+      continue;
+    }
+
+    for (uint8_t network_index = 0; network_index < count; ++network_index) {
+      if (networks[network_index].ssid == credential.ssid) {
+        QueueAttemptCandidate(credential);
+        break;
+      }
+    }
+  }
+}
+
+bool WifiRuntime::StartNextQueuedAttempt() {
+  while (saved_attempt_queue_.nextIndex < saved_attempt_queue_.count) {
+    const WifiCredential credential =
+        saved_attempt_queue_.items[saved_attempt_queue_.nextIndex++];
     if (credential.ssid.length() == 0) {
       continue;
     }
@@ -318,6 +334,104 @@ bool WifiRuntime::StartNextSavedCredentialAttempt() {
   }
 
   return false;
+}
+
+void WifiRuntime::ResetStartupDiscovery() {
+  startup_discovery_ = StartupDiscoveryState{};
+}
+
+void WifiRuntime::StartStartupDiscovery() {
+  CancelConnectAttempt(true);
+  ResetStartupDiscovery();
+  ResetSavedAttemptQueue();
+
+  if (scan_cycle_.active || visible_networks_.scanInProgress) {
+    WiFi.scanDelete();
+  }
+  ResetScanCycle();
+  visible_networks_.scanInProgress = false;
+
+  StopPortal();
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(false, false);
+  delay(50);
+
+  AppConfig config;
+  if (!LoadConfigSnapshot(config) || config.wifiCredentialCount == 0) {
+    EnterProvisioningPortal("未发现已保存的 Wi-Fi，请使用热点进行配网。", millis(),
+                            kSavedRetryIntervalMs);
+    return;
+  }
+
+  mode_ = WifiRuntimeMode::TryingSavedNetworks;
+  handoff_deadline_ms_ = 0;
+  next_saved_retry_ms_ = 0;
+  status_message_ = "正在查找已保存的 Wi-Fi...";
+
+  startup_discovery_.active = true;
+  if (!StartScanCycle(ScanCyclePurpose::StartupDiscovery, millis())) {
+    FinalizeStartupDiscovery(millis(), false);
+  }
+}
+
+void WifiRuntime::FinalizeStartupDiscovery(unsigned long now, bool round_succeeded) {
+  if (round_succeeded) {
+    AppConfig config;
+    if (LoadConfigSnapshot(config)) {
+      CollectAttemptCandidatesFromNetworks(scan_cycle_.items, scan_cycle_.count, config);
+    }
+  }
+
+  ResetScanCycle();
+  startup_discovery_.active = false;
+
+  if (StartNextQueuedAttempt()) {
+    return;
+  }
+
+  EnterProvisioningPortal("未发现可用的已保存 Wi-Fi，请使用热点进行配网。", now,
+                          kSavedRetryIntervalMs);
+}
+
+void WifiRuntime::TryPortalAutoRecovery(unsigned long now) {
+  if (!portal_active_ || connect_in_progress_ || startup_discovery_.active) {
+    return;
+  }
+
+  AppConfig config;
+  if (!LoadConfigSnapshot(config)) {
+    status_message_ = "读取 Wi-Fi 配置失败。";
+    next_saved_retry_ms_ = now + kSavedRetryIntervalMs;
+    return;
+  }
+
+  ResetSavedAttemptQueue();
+  CollectAttemptCandidatesFromNetworks(visible_networks_.items, visible_networks_.count, config);
+  next_saved_retry_ms_ = now + kSavedRetryIntervalMs;
+
+  if (StartNextQueuedAttempt()) {
+    return;
+  }
+
+  status_message_ = "正在等待已保存的 Wi-Fi 出现在附近...";
+}
+
+void WifiRuntime::EnterProvisioningPortal(const String& message, unsigned long now,
+                                          unsigned long retry_delay_ms) {
+  ResetStartupDiscovery();
+  ResetSavedAttemptQueue();
+
+  if (scan_cycle_.active || visible_networks_.scanInProgress) {
+    WiFi.scanDelete();
+  }
+  ResetScanCycle();
+  visible_networks_.scanInProgress = false;
+
+  EnsurePortalStarted();
+  mode_ = WifiRuntimeMode::ProvisioningPortal;
+  handoff_deadline_ms_ = 0;
+  next_saved_retry_ms_ = now + retry_delay_ms;
+  status_message_ = message;
 }
 
 void WifiRuntime::StartConnectAttempt(const String& ssid, const String& password) {
@@ -362,6 +476,9 @@ void WifiRuntime::HandleConnectAttempt(unsigned long now) {
     }
 
     connect_in_progress_ = false;
+    ResetStartupDiscovery();
+    ResetSavedAttemptQueue();
+    next_saved_retry_ms_ = 0;
     status_message_ = "已连接到 " + active_candidate_.ssid + "。";
     Serial.println("Wi-Fi connected: " + active_candidate_.ssid);
     active_candidate_ = PendingCredential{};
@@ -385,21 +502,20 @@ void WifiRuntime::HandleConnectAttempt(unsigned long now) {
   active_candidate_ = PendingCredential{};
   connect_in_progress_ = false;
 
-  if (StartNextSavedCredentialAttempt()) {
-    status_message_ = "连接 " + failed_ssid + " 失败，正在尝试下一个网络...";
+  if (StartNextQueuedAttempt()) {
+    status_message_ = "连接 " + failed_ssid + " 失败，正在尝试下一个可用网络。";
     return;
   }
 
-  EnsurePortalStarted();
-  mode_ = WifiRuntimeMode::ProvisioningPortal;
-  status_message_ = "连接失败，请使用热点重新配网。";
-  next_saved_retry_ms_ = now + kSavedRetryIntervalMs;
+  EnterProvisioningPortal("连接失败，请使用热点重新配网。", now,
+                          kSavedRetryIntervalMs);
 }
 
 void WifiRuntime::HandleConnected(unsigned long now) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Wi-Fi disconnected; reopening provisioning portal");
-    StartSavedCredentialCycle(true);
+    EnterProvisioningPortal("Wi-Fi 已断开，热点已重新打开。", now,
+                            kSavedRetryIntervalMs);
     return;
   }
 
@@ -425,7 +541,7 @@ void WifiRuntime::EnsurePortalStarted() {
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(ap_ssid_.c_str());
   portal_active_ = true;
-  status_message_ = "配网热点已开启，请连接设备热点进行配网。";
+  status_message_ = "配网热点已开启，请连接设备热点进行配置。";
   last_scan_request_ms_ = 0;
   visible_networks_ = VisibleWifiList{};
   Serial.println("Provisioning AP started: " + ap_ssid_);
@@ -450,7 +566,32 @@ void WifiRuntime::StopPortal() {
 void WifiRuntime::StartHandoff(const String& message) {
   mode_ = WifiRuntimeMode::PortalHandoff;
   handoff_deadline_ms_ = millis() + kPortalHandoffMs;
+  next_saved_retry_ms_ = 0;
   status_message_ = message;
+}
+
+bool WifiRuntime::StartScanCycle(ScanCyclePurpose purpose, unsigned long now) {
+  if (scan_cycle_.active) {
+    return false;
+  }
+
+  uint8_t start_channel = kFallbackScanStartChannel;
+  uint8_t end_channel = kFallbackScanEndChannel;
+  ResolveScanChannelRange(start_channel, end_channel);
+
+  ResetScanCycle();
+  scan_cycle_.active = true;
+  scan_cycle_.channelStartPending = true;
+  scan_cycle_.purpose = purpose;
+  scan_cycle_.currentChannel = start_channel;
+  scan_cycle_.finalChannel = end_channel;
+
+  if (purpose == ScanCyclePurpose::VisibleList) {
+    visible_networks_.scanInProgress = true;
+    last_scan_request_ms_ = now;
+  }
+
+  return true;
 }
 
 bool WifiRuntime::ResolveScanChannelRange(uint8_t& start_channel,
@@ -493,7 +634,9 @@ bool WifiRuntime::StartChannelScan(uint8_t channel) {
 }
 
 void WifiRuntime::FinalizeScanCycle(unsigned long now, bool publish_results) {
-  if (publish_results) {
+  const ScanCyclePurpose purpose = scan_cycle_.purpose;
+
+  if (publish_results && purpose == ScanCyclePurpose::VisibleList) {
     VisibleWifiList published_results;
     published_results.count = scan_cycle_.count;
     published_results.lastUpdatedMs = now;
@@ -505,12 +648,15 @@ void WifiRuntime::FinalizeScanCycle(unsigned long now, bool publish_results) {
     visible_networks_ = published_results;
   }
 
-  visible_networks_.scanInProgress = false;
+  if (purpose == ScanCyclePurpose::VisibleList) {
+    visible_networks_.scanInProgress = false;
+  }
+
   ResetScanCycle();
 }
 
 void WifiRuntime::BeginScan(unsigned long now) {
-  if (!portal_active_ || visible_networks_.scanInProgress) {
+  if (!portal_active_ || visible_networks_.scanInProgress || scan_cycle_.active) {
     return;
   }
 
@@ -518,27 +664,14 @@ void WifiRuntime::BeginScan(unsigned long now) {
     return;
   }
 
-  uint8_t start_channel = kFallbackScanStartChannel;
-  uint8_t end_channel = kFallbackScanEndChannel;
-  ResolveScanChannelRange(start_channel, end_channel);
-
-  ResetScanCycle();
-  scan_cycle_.active = true;
-  scan_cycle_.channelStartPending = true;
-  scan_cycle_.currentChannel = start_channel;
-  scan_cycle_.finalChannel = end_channel;
-
-  visible_networks_.scanInProgress = true;
-  last_scan_request_ms_ = now;
+  StartScanCycle(ScanCyclePurpose::VisibleList, now);
 }
 
 void WifiRuntime::PollScan(unsigned long now) {
-  if (!visible_networks_.scanInProgress) {
-    return;
-  }
-
   if (!scan_cycle_.active) {
-    FinalizeScanCycle(now, false);
+    if (visible_networks_.scanInProgress) {
+      visible_networks_.scanInProgress = false;
+    }
     return;
   }
 
@@ -546,7 +679,11 @@ void WifiRuntime::PollScan(unsigned long now) {
   // chance to run between channels instead of chaining one long radio burst.
   if (scan_cycle_.channelStartPending && !scan_cycle_.channelInProgress) {
     if (!StartChannelScan(scan_cycle_.currentChannel)) {
-      FinalizeScanCycle(now, false);
+      if (scan_cycle_.purpose == ScanCyclePurpose::StartupDiscovery) {
+        FinalizeStartupDiscovery(now, false);
+      } else {
+        FinalizeScanCycle(now, false);
+      }
     }
     return;
   }
@@ -557,10 +694,15 @@ void WifiRuntime::PollScan(unsigned long now) {
   }
 
   scan_cycle_.channelInProgress = false;
+  const ScanCyclePurpose purpose = scan_cycle_.purpose;
 
   if (scan_state == WIFI_SCAN_FAILED) {
     WiFi.scanDelete();
-    FinalizeScanCycle(now, false);
+    if (purpose == ScanCyclePurpose::StartupDiscovery) {
+      FinalizeStartupDiscovery(now, false);
+    } else {
+      FinalizeScanCycle(now, false);
+    }
     return;
   }
 
@@ -581,12 +723,15 @@ void WifiRuntime::PollScan(unsigned long now) {
     return;
   }
 
-  FinalizeScanCycle(now, true);
+  if (purpose == ScanCyclePurpose::StartupDiscovery) {
+    FinalizeStartupDiscovery(now, true);
+  } else {
+    FinalizeScanCycle(now, true);
+  }
 }
 
 void WifiRuntime::StoreScanResult(ScanCycleState& cycle, const String& ssid,
-                                  int32_t rssi, bool secured,
-                                  const AppConfig& config,
+                                  int32_t rssi, bool secured, const AppConfig& config,
                                   const String& current_ssid) {
   if (ssid.length() == 0) {
     return;
