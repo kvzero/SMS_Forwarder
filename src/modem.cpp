@@ -48,6 +48,20 @@ void Modem::Begin() {
   }
   Serial.println("Modem AT handshake is ready");
 
+  // Keep the modem in SMS-only mode. The ML307R manual documents autoconn and
+  // host auto dial-up as the persistent switches for application-layer data.
+  while (!SendAtAndWaitOK("AT+MUECONFIG=\"autoconn\",0", 2000)) {
+    Serial.println("Failed to disable automatic module data bring-up; retrying...");
+    vTaskDelay(kRetryYieldDelay);
+  }
+  Serial.println("Automatic module data bring-up disabled");
+
+  while (!SendAtAndWaitOK("AT+MDIALUPCFG=\"auto\",0", 2000)) {
+    Serial.println("Failed to disable automatic host dial-up; retrying...");
+    vTaskDelay(kRetryYieldDelay);
+  }
+  Serial.println("Automatic host dial-up disabled");
+
   while (!SendAtAndWaitOK("AT+CGACT=0,1", 5000)) {
     Serial.println("Failed to disable the data connection; retrying...");
     vTaskDelay(kRetryYieldDelay);
@@ -258,145 +272,6 @@ String Modem::SendAtCommand(const char* cmd, unsigned long timeout) {
   return response;
 }
 
-ModemPingResult Modem::Ping() {
-  ModemPingResult result;
-
-  Serial.println("Starting modem ping request");
-  while (serial_.available()) {
-    serial_.read();
-  }
-
-  Serial.println("Activating data connection (CGACT)...");
-  const String activate_response = SendAtCommand("AT+CGACT=1,1", 10000);
-  Serial.println("CGACT response: " + activate_response);
-  if (activate_response.indexOf("OK") < 0) {
-    Serial.println("Data connection activation failed; trying to continue anyway...");
-  }
-
-  while (serial_.available()) {
-    serial_.read();
-  }
-  delay(500);
-  serial_.println("AT+MPING=\"8.8.8.8\",30,1");
-
-  const unsigned long start = millis();
-  String response;
-  bool got_error = false;
-  bool got_ping_result = false;
-  bool ping_success = false;
-
-  while (millis() - start < 35000) {
-    while (serial_.available()) {
-      const char c = serial_.read();
-      response += c;
-      Serial.print(c);
-
-      if (response.indexOf("+CME ERROR") >= 0 || response.indexOf("ERROR") >= 0) {
-        got_error = true;
-        result.message = "模组返回错误";
-        break;
-      }
-
-      const int mping_index = response.indexOf("+MPING:");
-      if (mping_index >= 0) {
-        const int line_end = response.indexOf('\n', mping_index);
-        if (line_end >= 0) {
-          String mping_line = response.substring(mping_index, line_end);
-          mping_line.trim();
-          Serial.println("Received MPING result: " + mping_line);
-
-          const int colon_index = mping_line.indexOf(':');
-          if (colon_index >= 0) {
-            String params = mping_line.substring(colon_index + 1);
-            params.trim();
-
-            const int comma_index = params.indexOf(',');
-            String result_str =
-                comma_index >= 0 ? params.substring(0, comma_index) : params;
-            result_str.trim();
-            const int ping_result = result_str.toInt();
-
-            got_ping_result = true;
-            // Firmware variants may report success as result=0, result=1, or as
-            // a populated +MPING payload with the timing fields present.
-            ping_success = (ping_result == 0 || ping_result == 1) ||
-                           (params.indexOf(',') >= 0 && params.length() > 5);
-
-            if (ping_success) {
-              int idx1 = params.indexOf(',');
-              if (idx1 >= 0) {
-                String rest = params.substring(idx1 + 1);
-                String ip;
-                int idx2 = -1;
-                if (rest.startsWith("\"")) {
-                  const int quote_end = rest.indexOf('"', 1);
-                  if (quote_end >= 0) {
-                    ip = rest.substring(1, quote_end);
-                    idx2 = rest.indexOf(',', quote_end);
-                  } else {
-                    idx2 = rest.indexOf(',');
-                    ip = rest.substring(0, idx2);
-                  }
-                } else {
-                  idx2 = rest.indexOf(',');
-                  ip = rest.substring(0, idx2);
-                }
-
-                if (idx2 >= 0) {
-                  rest = rest.substring(idx2 + 1);
-                  const int idx3 = rest.indexOf(',');
-                  if (idx3 >= 0) {
-                    rest = rest.substring(idx3 + 1);
-                    const int idx4 = rest.indexOf(',');
-                    String time_str;
-                    String ttl_str;
-                    if (idx4 >= 0) {
-                      time_str = rest.substring(0, idx4);
-                      ttl_str = rest.substring(idx4 + 1);
-                    } else {
-                      time_str = rest;
-                      ttl_str = "N/A";
-                    }
-                    time_str.trim();
-                    ttl_str.trim();
-                    result.message = "目标: " + ip + ", 延迟: " + time_str +
-                                     "ms, TTL: " + ttl_str;
-                  }
-                }
-              }
-
-              if (result.message.length() == 0) {
-                result.message = "Ping成功";
-              }
-            } else {
-              result.message =
-                  "Ping超时或目标不可达 (错误码: " + String(ping_result) + ")";
-            }
-            break;
-          }
-        }
-      }
-    }
-
-    if (got_error || got_ping_result) {
-      break;
-    }
-    delay(10);
-  }
-
-  Serial.println("\nPing operation completed");
-  Serial.println("Deactivating PDP context (CGACT=0)...");
-  const String deactivate_response = SendAtCommand("AT+CGACT=0,1", 5000);
-  Serial.println("CGACT close response: " + deactivate_response);
-
-  result.success = got_ping_result && ping_success;
-  if (!got_ping_result && !got_error) {
-    result.message = "操作超时，未收到Ping结果";
-  }
-
-  return result;
-}
-
 void Modem::Reset() {
   Serial.println("Hard resetting the modem by toggling EN...");
   ModemPowerCycle();
@@ -549,7 +424,7 @@ String Modem::AssembleConcatSms(int slot) const {
     if (concat_buffer_[slot].parts[i].valid) {
       result += concat_buffer_[slot].parts[i].text;
     } else {
-      result += "[缺失分段" + String(i + 1) + "]";
+      result += "[缂哄け鍒嗘" + String(i + 1) + "]";
     }
   }
   return result;

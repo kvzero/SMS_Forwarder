@@ -32,7 +32,6 @@ enum class ModemRequester : uint8_t {
  */
 enum class ModemRequestType : uint8_t {
   SendAtCommand,
-  Ping,
   SendSms,
   Reset,
 };

@@ -220,8 +220,6 @@ static const char kToolsPageHtml[] = R"rawliteral(
     button:hover { background: #1976D2; }
     .btn-query { background: #9C27B0; }
     .btn-query:hover { background: #7B1FA2; }
-    .btn-ping { background: #FF9800; }
-    .btn-ping:hover { background: #F57C00; }
     .btn-info { background: #607D8B; }
     .btn-info:hover { background: #455A64; }
     button:disabled { background: #ccc; cursor: not-allowed; }
@@ -290,12 +288,6 @@ static const char kToolsPageHtml[] = R"rawliteral(
       <div class="result-box" id="queryResult"></div>
     </div>
     
-    <div class="section">
-      <div class="section-title">🌐 网络测试</div>
-      <button type="button" class="btn-ping" id="pingBtn" onclick="confirmPing()">📡 点我消耗一点流量</button>
-      <div class="hint">将向 8.8.8.8 进行 ping 操作，一次性消耗极少流量费用</div>
-      <div class="result-box" id="pingResult"></div>
-    </div>
     
     <div class="section">
       <div class="section-title">✈️ 模组控制</div>
@@ -370,59 +362,6 @@ static const char kToolsPageHtml[] = R"rawliteral(
           onError(error);
         });
     }
-    function confirmPing() {
-      if (confirm("确定要执行 Ping 操作吗？\n\n这将消耗少量流量。")) {
-        doPing();
-      }
-    }
-
-    function doPing() {
-      var btn = document.getElementById('pingBtn');
-      var result = document.getElementById('pingResult');
-      
-      btn.disabled = true;
-      btn.textContent = '⏳ 正在 Ping...';
-      result.className = 'result-box result-loading';
-      result.style.display = 'block';
-      result.textContent = '正在提交 Ping 请求，请稍候...';
-      
-      fetch('/ping', { method: 'POST' })
-        .then(response => response.json())
-        .then(data => {
-          if (!data.accepted) {
-            throw new Error(data.message || '提交 Ping 请求失败。');
-          }
-
-          result.textContent = '正在执行 Ping 操作，请稍候（最长等待30秒）...';
-          pollModemResult(
-            data.requestId,
-            function(job) {
-              btn.disabled = false;
-              btn.textContent = '📡 点我消耗一点流量';
-              if (job.success) {
-                result.className = 'result-box result-success';
-                result.innerHTML = '✅ Ping 成功！<br>' + job.message;
-              } else {
-                result.className = 'result-box result-error';
-                result.innerHTML = '❌ Ping 失败<br>' + job.message;
-              }
-            },
-            function(error) {
-              btn.disabled = false;
-              btn.textContent = '📡 点我消耗一点流量';
-              result.className = 'result-box result-error';
-              result.textContent = '❌ 请求失败: ' + error;
-            }
-          );
-        })
-        .catch(error => {
-          btn.disabled = false;
-          btn.textContent = '📡 点我消耗一点流量';
-          result.className = 'result-box result-error';
-          result.textContent = '❌ 请求失败: ' + error;
-        });
-    }
-
     function queryFlightMode() {
       var result = document.getElementById('flightResult');
       result.className = 'result-box result-loading';

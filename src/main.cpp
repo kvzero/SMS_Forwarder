@@ -300,13 +300,6 @@ void ProcessModemRequest(Modem& modem, const ModemRequest& request) {
       break;
     }
 
-    case ModemRequestType::Ping: {
-      const ModemPingResult result = modem.Ping();
-      response.success = result.success;
-      CopyString(response.message, result.message);
-      break;
-    }
-
     case ModemRequestType::SendSms: {
       response.success = modem.SendSms(request.phone, request.text);
       CopyCString(response.message,

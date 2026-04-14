@@ -11,12 +11,6 @@
 #include "board_pins.h"
 #include "sms_inbox.h"
 
-/** @brief Browser-facing result returned by the Ping helper. */
-struct ModemPingResult {
-  bool success = false;   ///< Whether the ping should be reported as successful.
-  String message;         ///< Human-readable summary shown in the web UI.
-};
-
 /**
  * @brief Owns the modem serial session, AT command flow, and SMS receive state.
  */
@@ -50,11 +44,6 @@ class Modem {
    * @return Raw modem response captured during the wait window.
    */
   String SendAtCommand(const char* cmd, unsigned long timeout);
-  /**
-   * @brief Performs a one-shot ping through the modem data connection.
-   * @return Parsed ping result for the admin web UI.
-   */
-  ModemPingResult Ping();
   /** @brief Power-cycles the modem and waits for the AT interface to recover. */
   void Reset();
   /** @brief Forwards one byte from the USB serial console to the modem UART. */

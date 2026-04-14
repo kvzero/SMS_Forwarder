@@ -55,7 +55,6 @@ class WebAdmin {
   bool RequestAtCommand(const String& cmd, unsigned long timeout_ms, String& response);
   bool RequestSendSms(const String& phone, const String& content);
   uint32_t StartAsyncAtCommand(const String& cmd, unsigned long timeout_ms);
-  uint32_t StartAsyncPing();
   uint32_t AllocateRequestId();
   void DrainModemResponses();
   void StorePendingResponse(const ModemResponse& response);
@@ -71,7 +70,6 @@ class WebAdmin {
   void HandleATCommand();
   void HandleQuery();
   void HandleSendSms();
-  void HandlePing();
   void HandleSave();
   void HandleModemResult();
   void HandleProvisionPage();

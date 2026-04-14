@@ -53,7 +53,6 @@ void WebAdmin::Begin() {
   server_.on("/tools", [this]() { HandleToolsPage(); });
   server_.on("/sms", [this]() { HandleToolsPage(); });
   server_.on("/sendsms", HTTP_POST, [this]() { HandleSendSms(); });
-  server_.on("/ping", HTTP_POST, [this]() { HandlePing(); });
   server_.on("/query", [this]() { HandleQuery(); });
   server_.on("/flight", [this]() { HandleFlightMode(); });
   server_.on("/at", [this]() { HandleATCommand(); });
@@ -194,42 +193,6 @@ uint32_t WebAdmin::StartAsyncAtCommand(const String& cmd, unsigned long timeout_
   request.type = ModemRequestType::SendAtCommand;
   request.timeoutMs = timeout_ms;
   CopyString(request.command, cmd);
-
-  if (!SubmitModemRequest(request)) {
-    slot->inUse = false;
-    slot->message = "";
-    return 0;
-  }
-
-  return request_id;
-}
-
-uint32_t WebAdmin::StartAsyncPing() {
-  PendingWebRequest* slot = nullptr;
-  uint32_t request_id = 0;
-
-  for (PendingWebRequest& pending_request : pending_requests_) {
-    if (!pending_request.inUse) {
-      slot = &pending_request;
-      request_id = AllocateRequestId();
-      pending_request.inUse = true;
-      pending_request.completed = false;
-      pending_request.requestId = request_id;
-      pending_request.success = false;
-      pending_request.createdAtMs = millis();
-      pending_request.message = "";
-      break;
-    }
-  }
-
-  if (slot == nullptr) {
-    return 0;
-  }
-
-  ModemRequest request;
-  request.requestId = request_id;
-  request.requester = ModemRequester::Web;
-  request.type = ModemRequestType::Ping;
 
   if (!SubmitModemRequest(request)) {
     slot->inUse = false;
@@ -959,23 +922,6 @@ void WebAdmin::HandleSave() {
       Serial.println("Failed to queue config-updated event for AppTask");
     }
   }
-}
-
-void WebAdmin::HandlePing() {
-  if (!CheckAuth()) return;
-
-  const uint32_t request_id = StartAsyncPing();
-  String json = "{";
-  if (request_id == 0) {
-    json += "\"accepted\":false,";
-    json += "\"message\":\"系统忙，请稍后重试。\"";
-  } else {
-    json += "\"accepted\":true,";
-    json += "\"requestId\":" + String(request_id);
-  }
-  json += "}";
-
-  server_.send(200, "application/json", json);
 }
 
 void WebAdmin::HandleModemResult() {
