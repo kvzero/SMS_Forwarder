@@ -11,12 +11,16 @@
 
 #include <cstring>
 
+#include "board_pins.h"
 #include "config_store.h"
 
 constexpr size_t kTaskPhoneCapacity = 32;
 constexpr size_t kTaskTimestampCapacity = 48;
 constexpr size_t kTaskCommandCapacity = 128;
-constexpr size_t kTaskTextCapacity = 640;
+constexpr size_t kTaskOutgoingTextCapacity = 640;
+constexpr size_t kSmsConcatPartUtf8MaxBytes = 67 * 3;
+constexpr size_t kTaskIncomingTextCapacity =
+    static_cast<size_t>(kMaxConcatParts) * kSmsConcatPartUtf8MaxBytes + 1;
 constexpr size_t kTaskResultCapacity = 1024;
 
 /**
@@ -41,7 +45,7 @@ enum class ModemRequestType : uint8_t {
  */
 struct SmsEnvelope {
   char sender[kTaskPhoneCapacity] = {0};
-  char text[kTaskTextCapacity] = {0};
+  char text[kTaskIncomingTextCapacity] = {0};
   char timestamp[kTaskTimestampCapacity] = {0};
 };
 
@@ -58,7 +62,7 @@ struct ModemRequest {
   uint32_t timeoutMs = 0;
   char command[kTaskCommandCapacity] = {0};
   char phone[kTaskPhoneCapacity] = {0};
-  char text[kTaskTextCapacity] = {0};
+  char text[kTaskOutgoingTextCapacity] = {0};
 };
 
 /**
@@ -106,17 +110,20 @@ struct SharedConfigState {
  * @tparam N Destination capacity including the trailing null terminator.
  * @param dest Fixed-size destination buffer.
  * @param src Source string. Null is treated as an empty string.
+ * @return True when the source was truncated to fit in @p dest.
  */
 template <size_t N>
-inline void CopyCString(char (&dest)[N], const char* src) {
+inline bool CopyCString(char (&dest)[N], const char* src) {
   static_assert(N > 0, "Destination buffer must not be empty");
   if (src == nullptr) {
     dest[0] = '\0';
-    return;
+    return false;
   }
 
+  const size_t src_len = std::strlen(src);
   std::strncpy(dest, src, N - 1);
   dest[N - 1] = '\0';
+  return src_len >= N;
 }
 
 /**
@@ -124,8 +131,9 @@ inline void CopyCString(char (&dest)[N], const char* src) {
  * @tparam N Destination capacity including the trailing null terminator.
  * @param dest Fixed-size destination buffer.
  * @param src Source string.
+ * @return True when the source was truncated to fit in @p dest.
  */
 template <size_t N>
-inline void CopyString(char (&dest)[N], const String& src) {
-  CopyCString(dest, src.c_str());
+inline bool CopyString(char (&dest)[N], const String& src) {
+  return CopyCString(dest, src.c_str());
 }

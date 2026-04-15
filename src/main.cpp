@@ -90,12 +90,18 @@ bool SubmitModemRequest(const ModemRequest& request,
 
 bool WaitForAppModemResponse(uint32_t request_id, ModemResponse& response,
                              TickType_t timeout_ticks) {
-  const TickType_t deadline = xTaskGetTickCount() + timeout_ticks;
-  while (xTaskGetTickCount() < deadline) {
+  const TickType_t start = xTaskGetTickCount();
+  while (true) {
     const TickType_t now = xTaskGetTickCount();
-    const TickType_t wait_time = (deadline - now) > pdMS_TO_TICKS(50)
+    const TickType_t elapsed = now - start;
+    if (elapsed >= timeout_ticks) {
+      break;
+    }
+
+    const TickType_t remaining = timeout_ticks - elapsed;
+    const TickType_t wait_time = remaining > pdMS_TO_TICKS(50)
                                      ? pdMS_TO_TICKS(50)
-                                     : (deadline - now);
+                                     : remaining;
 
     if (xQueueReceive(app_modem_response_queue, &response, wait_time) != pdTRUE) {
       continue;
@@ -110,9 +116,21 @@ bool WaitForAppModemResponse(uint32_t request_id, ModemResponse& response,
 }
 
 void CopySmsEnvelope(SmsEnvelope& envelope, const SmsMessage& message) {
-  CopyString(envelope.sender, message.sender);
-  CopyString(envelope.text, message.text);
-  CopyString(envelope.timestamp, message.timestamp);
+  if (CopyString(envelope.sender, message.sender)) {
+    Serial.printf("Incoming SMS sender was truncated (%u -> %u bytes)\n",
+                  static_cast<unsigned int>(message.sender.length()),
+                  static_cast<unsigned int>(sizeof(envelope.sender) - 1));
+  }
+  if (CopyString(envelope.text, message.text)) {
+    Serial.printf("Incoming SMS text was truncated (%u -> %u bytes)\n",
+                  static_cast<unsigned int>(message.text.length()),
+                  static_cast<unsigned int>(sizeof(envelope.text) - 1));
+  }
+  if (CopyString(envelope.timestamp, message.timestamp)) {
+    Serial.printf("Incoming SMS timestamp was truncated (%u -> %u bytes)\n",
+                  static_cast<unsigned int>(message.timestamp.length()),
+                  static_cast<unsigned int>(sizeof(envelope.timestamp) - 1));
+  }
 }
 
 SmsMessage ToSmsMessage(const SmsEnvelope& envelope) {
@@ -232,11 +250,7 @@ void HandleInboxAction(const InboxAction& action, Notifier& notifier,
 
       String subject = success ? "Admin SMS command succeeded"
                                : "Admin SMS command failed";
-      String body = "Command: SMS:";
-      body += action.commandPhone;
-      body += ":";
-      body += action.commandText;
-      body += "\nTarget: ";
+      String body = "Target: ";
       body += action.commandPhone;
       body += "\nMessage: ";
       body += action.commandText;

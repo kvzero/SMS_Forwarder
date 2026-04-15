@@ -11,12 +11,23 @@
 namespace {
 
 constexpr TickType_t kRetryYieldDelay = pdMS_TO_TICKS(500);
+constexpr const char* kTruncatedSuffixPrefix = "[TRUNCATED: total=";
 
 void FillSmsMessage(SmsMessage& message, const String& sender, const String& text,
                     const String& timestamp) {
   message.sender = sender;
   message.text = text;
   message.timestamp = timestamp;
+}
+
+int ClampConcatTotalParts(int reported_total_parts) {
+  if (reported_total_parts < 1) {
+    return 1;
+  }
+  if (reported_total_parts > kMaxConcatParts) {
+    return kMaxConcatParts;
+  }
+  return reported_total_parts;
 }
 
 }  // namespace
@@ -131,18 +142,20 @@ bool Modem::Poll(SmsMessage& message) {
     int* concat_info = pdu_.getConcatInfo();
     const int ref_number = concat_info[0];
     const int part_number = concat_info[1];
-    const int total_parts = concat_info[2];
+    const int reported_total_parts = concat_info[2];
 
     Serial.printf("Long SMS info: ref=%d, part=%d, total=%d\n", ref_number, part_number,
-                  total_parts);
+                  reported_total_parts);
     Serial.println("===================");
 
-    if (total_parts > 1 && part_number > 0) {
-      Serial.printf("Received long SMS segment %d/%d\n", part_number, total_parts);
+    if (reported_total_parts > 1 && part_number > 0) {
+      Serial.printf("Received long SMS segment %d/%d\n", part_number, reported_total_parts);
 
-      const int slot = FindOrCreateConcatSlot(ref_number, pdu_.getSender(), total_parts);
+      const int slot =
+          FindOrCreateConcatSlot(ref_number, pdu_.getSender(), reported_total_parts);
       const int part_index = part_number - 1;
-      if (part_index >= 0 && part_index < kMaxConcatParts) {
+      const int expected_total_parts = concat_buffer_[slot].totalParts;
+      if (part_index >= 0 && part_index < expected_total_parts) {
         if (!concat_buffer_[slot].parts[part_index].valid) {
           concat_buffer_[slot].parts[part_index].valid = true;
           concat_buffer_[slot].parts[part_index].text = String(pdu_.getText());
@@ -153,13 +166,19 @@ bool Modem::Poll(SmsMessage& message) {
           }
 
           Serial.printf("  Cached segment %d; now have %d/%d\n", part_number,
-                        concat_buffer_[slot].receivedParts, total_parts);
+                        concat_buffer_[slot].receivedParts, expected_total_parts);
         } else {
           Serial.printf("  Segment %d already exists; skipping duplicate\n", part_number);
         }
+      } else if (part_index >= expected_total_parts &&
+                 !concat_buffer_[slot].droppedPartLogged) {
+        concat_buffer_[slot].droppedPartLogged = true;
+        Serial.printf("Long SMS exceeds max parts; dropping segment %d (reported total=%d, "
+                      "max=%d)\n",
+                      part_number, concat_buffer_[slot].reportedParts, kMaxConcatParts);
       }
 
-      if (concat_buffer_[slot].receivedParts >= total_parts) {
+      if (concat_buffer_[slot].receivedParts >= expected_total_parts) {
         Serial.println("Long SMS is complete; assembling and forwarding");
         FillSmsMessage(message, concat_buffer_[slot].sender, AssembleConcatSms(slot),
                        concat_buffer_[slot].timestamp);
@@ -360,7 +379,11 @@ void Modem::ModemPowerCycle() {
 void Modem::InitConcatBuffer() {
   for (int i = 0; i < kMaxConcatMessages; ++i) {
     concat_buffer_[i].inUse = false;
+    concat_buffer_[i].totalParts = 0;
+    concat_buffer_[i].reportedParts = 0;
     concat_buffer_[i].receivedParts = 0;
+    concat_buffer_[i].truncatedByPartLimit = false;
+    concat_buffer_[i].droppedPartLogged = false;
     concat_buffer_[i].timestamp = "";
     for (int j = 0; j < kMaxConcatParts; ++j) {
       concat_buffer_[i].parts[j].valid = false;
@@ -369,10 +392,22 @@ void Modem::InitConcatBuffer() {
   }
 }
 
-int Modem::FindOrCreateConcatSlot(int ref_number, const char* sender, int total_parts) {
+int Modem::FindOrCreateConcatSlot(int ref_number, const char* sender,
+                                  int reported_total_parts) {
+  const int expected_total_parts = ClampConcatTotalParts(reported_total_parts);
+  const bool truncated = reported_total_parts > kMaxConcatParts;
+
   for (int i = 0; i < kMaxConcatMessages; ++i) {
     if (concat_buffer_[i].inUse && concat_buffer_[i].refNumber == ref_number &&
         concat_buffer_[i].sender.equals(sender)) {
+      if (reported_total_parts > concat_buffer_[i].reportedParts) {
+        concat_buffer_[i].reportedParts = reported_total_parts;
+      }
+      if (truncated && !concat_buffer_[i].truncatedByPartLimit) {
+        concat_buffer_[i].truncatedByPartLimit = true;
+        Serial.printf("Long SMS exceeds max parts; truncating to %d segments (reported=%d)\n",
+                      kMaxConcatParts, reported_total_parts);
+      }
       return i;
     }
   }
@@ -382,10 +417,17 @@ int Modem::FindOrCreateConcatSlot(int ref_number, const char* sender, int total_
       concat_buffer_[i].inUse = true;
       concat_buffer_[i].refNumber = ref_number;
       concat_buffer_[i].sender = String(sender);
-      concat_buffer_[i].totalParts = total_parts;
+      concat_buffer_[i].totalParts = expected_total_parts;
+      concat_buffer_[i].reportedParts = reported_total_parts;
       concat_buffer_[i].receivedParts = 0;
+      concat_buffer_[i].truncatedByPartLimit = truncated;
+      concat_buffer_[i].droppedPartLogged = false;
       concat_buffer_[i].firstPartTime = millis();
       concat_buffer_[i].timestamp = "";
+      if (truncated) {
+        Serial.printf("Long SMS exceeds max parts; truncating to %d segments (reported=%d)\n",
+                      kMaxConcatParts, reported_total_parts);
+      }
       for (int j = 0; j < kMaxConcatParts; ++j) {
         concat_buffer_[i].parts[j].valid = false;
         concat_buffer_[i].parts[j].text = "";
@@ -407,10 +449,17 @@ int Modem::FindOrCreateConcatSlot(int ref_number, const char* sender, int total_
   concat_buffer_[oldest_slot].inUse = true;
   concat_buffer_[oldest_slot].refNumber = ref_number;
   concat_buffer_[oldest_slot].sender = String(sender);
-  concat_buffer_[oldest_slot].totalParts = total_parts;
+  concat_buffer_[oldest_slot].totalParts = expected_total_parts;
+  concat_buffer_[oldest_slot].reportedParts = reported_total_parts;
   concat_buffer_[oldest_slot].receivedParts = 0;
+  concat_buffer_[oldest_slot].truncatedByPartLimit = truncated;
+  concat_buffer_[oldest_slot].droppedPartLogged = false;
   concat_buffer_[oldest_slot].firstPartTime = millis();
   concat_buffer_[oldest_slot].timestamp = "";
+  if (truncated) {
+    Serial.printf("Long SMS exceeds max parts; truncating to %d segments (reported=%d)\n",
+                  kMaxConcatParts, reported_total_parts);
+  }
   for (int j = 0; j < kMaxConcatParts; ++j) {
     concat_buffer_[oldest_slot].parts[j].valid = false;
     concat_buffer_[oldest_slot].parts[j].text = "";
@@ -424,15 +473,23 @@ String Modem::AssembleConcatSms(int slot) const {
     if (concat_buffer_[slot].parts[i].valid) {
       result += concat_buffer_[slot].parts[i].text;
     } else {
-      result += "[缂哄け鍒嗘" + String(i + 1) + "]";
+      result += "[缺失分段" + String(i + 1) + "]";
     }
+  }
+  if (concat_buffer_[slot].truncatedByPartLimit) {
+    result += kTruncatedSuffixPrefix + String(concat_buffer_[slot].reportedParts) +
+              ", max=" + String(kMaxConcatParts) + "]";
   }
   return result;
 }
 
 void Modem::ClearConcatSlot(int slot) {
   concat_buffer_[slot].inUse = false;
+  concat_buffer_[slot].totalParts = 0;
+  concat_buffer_[slot].reportedParts = 0;
   concat_buffer_[slot].receivedParts = 0;
+  concat_buffer_[slot].truncatedByPartLimit = false;
+  concat_buffer_[slot].droppedPartLogged = false;
   concat_buffer_[slot].sender = "";
   concat_buffer_[slot].timestamp = "";
   for (int j = 0; j < kMaxConcatParts; ++j) {
@@ -450,6 +507,10 @@ bool Modem::CheckConcatTimeout(SmsMessage& message) {
       Serial.println("Long SMS timed out; forwarding the partial message");
       Serial.printf("  Ref: %d, received: %d/%d\n", concat_buffer_[i].refNumber,
                     concat_buffer_[i].receivedParts, concat_buffer_[i].totalParts);
+      if (concat_buffer_[i].truncatedByPartLimit) {
+        Serial.printf("  Reported parts: %d (max %d)\n", concat_buffer_[i].reportedParts,
+                      kMaxConcatParts);
+      }
 
       FillSmsMessage(message, concat_buffer_[i].sender, AssembleConcatSms(i),
                      concat_buffer_[i].timestamp);

@@ -101,12 +101,17 @@ bool WebAdmin::SubmitModemRequest(const ModemRequest& request, TickType_t timeou
 
 bool WebAdmin::WaitForModemResponse(uint32_t request_id, ModemResponse& response,
                                     TickType_t timeout_ticks) {
-  const TickType_t deadline = xTaskGetTickCount() + timeout_ticks;
-
-  while (xTaskGetTickCount() < deadline) {
+  const TickType_t start = xTaskGetTickCount();
+  while (true) {
     const TickType_t now = xTaskGetTickCount();
+    const TickType_t elapsed = now - start;
+    if (elapsed >= timeout_ticks) {
+      break;
+    }
+
+    const TickType_t remaining = timeout_ticks - elapsed;
     const TickType_t wait_time =
-        (deadline - now) > kWebSyncPollSlice ? kWebSyncPollSlice : (deadline - now);
+        remaining > kWebSyncPollSlice ? kWebSyncPollSlice : remaining;
 
     ModemResponse incoming;
     if (xQueueReceive(web_response_queue_, &incoming, wait_time) != pdTRUE) {

@@ -48,8 +48,11 @@ void Notifier::SendEmail(const AppConfig& config, const char* subject, const cha
     return;
   }
 
-  smtp_->authenticate(config.smtpUser.c_str(), config.smtpPass.c_str(),
-                      readymail_auth_password);
+  if (!smtp_->authenticate(config.smtpUser.c_str(), config.smtpPass.c_str(),
+                           readymail_auth_password)) {
+    Serial.println("Failed to authenticate with the SMTP server");
+    return;
+  }
 
   SMTPMessage msg;
   String from = "sms notify <";
@@ -64,7 +67,10 @@ void Notifier::SendEmail(const AppConfig& config, const char* subject, const cha
   msg.headers.add(rfc822_subject, subject);
   msg.text.body(body);
   msg.timestamp = time(nullptr);
-  smtp_->send(msg);
+  if (!smtp_->send(msg)) {
+    Serial.println("Failed to send email");
+    return;
+  }
   Serial.println("Email sent");
 }
 

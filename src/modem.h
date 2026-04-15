@@ -61,7 +61,10 @@ class Modem {
     String sender;
     String timestamp;
     int totalParts;
+    int reportedParts;
     int receivedParts;
+    bool truncatedByPartLimit;
+    bool droppedPartLogged;
     unsigned long firstPartTime;
     SmsPart parts[kMaxConcatParts];
   };
@@ -76,7 +79,7 @@ class Modem {
   void ModemPowerCycle();
 
   void InitConcatBuffer();
-  int FindOrCreateConcatSlot(int ref_number, const char* sender, int total_parts);
+  int FindOrCreateConcatSlot(int ref_number, const char* sender, int reported_total_parts);
   String AssembleConcatSms(int slot) const;
   void ClearConcatSlot(int slot);
   bool CheckConcatTimeout(SmsMessage& message);
