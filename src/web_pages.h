@@ -6,7 +6,6 @@
 
 #include "config_store.h"
 
-
 static const char kConfigPageHtml[] = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -15,48 +14,105 @@ static const char kConfigPageHtml[] = R"rawliteral(
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>短信转发配置</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-    .container { max-width: 600px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-    h1 { color: #333; text-align: center; }
-    .form-group { margin-bottom: 15px; }
-    label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
-    input[type="text"], input[type="password"], input[type="number"], textarea, select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; box-sizing: border-box; }
-    textarea { resize: vertical; min-height: 80px; }
-    button { width: 100%; padding: 12px; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; margin-top: 10px; }
-    button:hover { background: #45a049; }
-    .label-inline { display:inline; font-weight:normal; margin-left: 5px; }
-    .btn-send { background: #2196F3; }
-    .btn-send:hover { background: #1976D2; }
-    .section { border: 1px solid #ddd; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
-    .section-title { font-size: 18px; color: #333; margin-bottom: 10px; }
-    .status { padding: 10px; background: #e7f3fe; border-left: 4px solid #2196F3; margin-bottom: 20px; }
-    .warning { padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107; margin-bottom: 20px; font-size: 12px; }
-    .hint { font-size: 12px; color: #888; }
-    .nav { display: flex; gap: 10px; margin-bottom: 20px; }
-    .nav a { flex: 1; text-align: center; padding: 10px; background: #eee; border-radius: 5px; text-decoration: none; color: #333; }
-    .nav a.active { background: #4CAF50; color: white; }
-    .push-channel { border: 1px solid #e0e0e0; padding: 12px; margin-bottom: 15px; border-radius: 5px; background: #fafafa; }
-    .push-channel-header { display: flex; align-items: center; margin-bottom: 10px; }
-    .push-channel-header input[type="checkbox"] { width: auto; margin-right: 8px; }
-    .push-channel-header label { margin: 0; font-weight: bold; }
+    :root {
+      --primary: #3b82f6;
+      --glass-bg: rgba(255, 255, 255, 0.6);
+      --glass-border-light: rgba(255, 255, 255, 0.8);
+      --glass-border-dark: rgba(255, 255, 255, 0.2);
+      --text-main: #1e293b;
+      --text-sub: #64748b;
+    }
+
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+      margin: 0; padding: 20px; 
+      background-color: #e2e8f0;
+      background-image: 
+        radial-gradient(at 10% 10%, rgba(191, 219, 254, 0.8) 0px, transparent 50%),
+        radial-gradient(at 90% 10%, rgba(221, 214, 254, 0.8) 0px, transparent 50%),
+        radial-gradient(at 50% 90%, rgba(204, 251, 241, 0.8) 0px, transparent 50%);
+      background-attachment: fixed;
+      color: var(--text-main);
+    }
+
+    .container { 
+      max-width: 600px; margin: 0 auto; 
+      background: var(--glass-bg); 
+      backdrop-filter: blur(24px) saturate(120%); 
+      -webkit-backdrop-filter: blur(24px) saturate(120%);
+      padding: 32px; 
+      border-radius: 24px; 
+      border-top: 1.5px solid var(--glass-border-light);
+      border-left: 1.5px solid var(--glass-border-light);
+      border-right: 1px solid var(--glass-border-dark);
+      border-bottom: 1px solid var(--glass-border-dark);
+      box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.15), 0 0 0 1px rgba(255,255,255,0.3) inset; 
+    }
+
+    h1 { font-size: 22px; font-weight: 600; text-align: center; margin: 0 0 28px 0; letter-spacing: 0.5px; }
+    
+    .nav { display: flex; gap: 12px; margin-bottom: 28px; padding: 6px; background: rgba(255,255,255,0.4); border-radius: 16px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02); border: 1px solid rgba(255,255,255,0.5); }
+    .nav a { flex: 1; text-align: center; padding: 10px; border-radius: 12px; text-decoration: none; color: var(--text-sub); font-size: 14px; transition: all 0.2s; font-weight: 500; }
+    .nav a.active { background: #ffffff; color: var(--primary); box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+
+    .status { padding: 14px; background: rgba(59, 130, 246, 0.08); border-radius: 14px; margin-bottom: 24px; font-size: 13px; text-align: center; color: #1e3a8a; border: 1px solid rgba(59, 130, 246, 0.15); }
+
+    .section { 
+      background: rgba(255, 255, 255, 0.35); 
+      padding: 24px; margin-bottom: 24px; border-radius: 20px; 
+      border: 1px solid var(--glass-border-light);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.02);
+    }
+    .section-title { font-size: 15px; font-weight: 600; margin-bottom: 16px; color: var(--text-main); }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; margin-bottom: 8px; font-size: 12px; font-weight: 500; color: var(--text-sub); }
+    
+    input, textarea, select { 
+      width: 100%; padding: 14px; 
+      background: rgba(255, 255, 255, 0.5);
+      border: 1px solid rgba(255,255,255,0.8); 
+      border-radius: 12px; box-sizing: border-box;
+      font-size: 14px; color: var(--text-main);
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.02);
+      transition: all 0.2s ease;
+    }
+    input:focus, textarea:focus { outline: none; background: rgba(255, 255, 255, 0.9); border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1), inset 0 2px 5px rgba(0,0,0,0.01); }
+    
+    .warning { padding: 12px 16px; background: rgba(245, 158, 11, 0.1); border-radius: 12px; margin-bottom: 16px; font-size: 12px; color: #b45309; line-height: 1.6; border: 1px solid rgba(245, 158, 11, 0.2); }
+    .hint { font-size: 12px; color: var(--text-sub); margin-bottom: 12px; line-height: 1.5; }
+    
+    button { 
+      width: 100%; padding: 16px; 
+      background: var(--primary); 
+      color: white; border: none; border-radius: 14px; 
+      cursor: pointer; font-size: 15px; font-weight: 600;
+      box-shadow: 0 8px 16px rgba(59, 130, 246, 0.25), inset 0 1px 1px rgba(255,255,255,0.2);
+      transition: all 0.2s; margin-top: 8px;
+    }
+    button:hover { transform: translateY(-1px); box-shadow: 0 10px 20px rgba(59, 130, 246, 0.3), inset 0 1px 1px rgba(255,255,255,0.2); }
+    button:active { transform: translateY(1px); box-shadow: 0 2px 4px rgba(59, 130, 246, 0.2); }
+
+    .push-channel { border: 1px solid var(--glass-border-light); padding: 16px; margin-bottom: 16px; border-radius: 16px; background: rgba(255,255,255,0.2); }
+    .push-channel-header { display: flex; align-items: center; margin-bottom: 12px; font-size: 14px; font-weight: 500; }
+    .push-channel-header input[type="checkbox"] { width: auto; height: 16px; margin-right: 12px; accent-color: var(--primary); }
     .push-channel-body { display: none; }
     .push-channel.enabled .push-channel-body { display: block; }
-    .push-type-hint { font-size: 11px; color: #666; margin-top: 5px; padding: 8px; background: #f0f0f0; border-radius: 3px; }
+    .push-type-hint { font-size: 12px; color: var(--text-sub); margin-top: 10px; padding: 12px; background: rgba(255,255,255,0.4); border-radius: 10px; border: 1px solid rgba(255,255,255,0.5); line-height: 1.5; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>📱 短信转发器</h1>
+    <h1>短信转发器</h1>
     <div class="nav">
-      <a href="/" class="active">⚙️ 系统配置</a>
-      <a href="/tools">🧰 工具箱</a>
+      <a href="/" class="active">系统配置</a>
+      <a href="/tools">工具箱</a>
     </div>
     <div class="status" id="status">设备IP: <strong>%IP%</strong></div>
     
     <form action="/save" method="POST">
       <div class="section">
-        <div class="section-title">🔐 Web管理账号设置</div>
-        <div class="warning">⚠️ 首次使用请修改默认密码！默认账号: )rawliteral" DEFAULT_WEB_USER R"rawliteral(，默认密码: )rawliteral" DEFAULT_WEB_PASS R"rawliteral(
+        <div class="section-title">管理账号设置</div>
+        <div class="warning">首次使用请修改默认密码！<br>默认账号: )rawliteral" DEFAULT_WEB_USER R"rawliteral(<br>默认密码: )rawliteral" DEFAULT_WEB_PASS R"rawliteral(
         </div>
         <div class="form-group">
           <label>管理账号</label>
@@ -69,7 +125,7 @@ static const char kConfigPageHtml[] = R"rawliteral(
       </div>
       
       <div class="section">
-        <div class="section-title">📧 邮件通知设置</div>
+        <div class="section-title">邮件通知设置</div>
         <div class="form-group">
           <label>SMTP服务器</label>
           <input type="text" name="smtpServer" value="%SMTP_SERVER%" placeholder="smtp.qq.com">
@@ -93,30 +149,29 @@ static const char kConfigPageHtml[] = R"rawliteral(
       </div>
       
       <div class="section">
-        <div class="section-title">🔗 HTTP推送通道设置</div>
-        <div class="hint" style="margin-bottom:15px;">可同时启用多个推送通道，每个通道独立配置。支持POST JSON、Bark、GET、钉钉、PushPlus、Server酱等多种方式。</div>
-        
+        <div class="section-title">HTTP 推送通道设置</div>
+        <div class="hint" style="margin-bottom:15px;">支持 POST JSON、Bark、GET、钉钉、PushPlus、Server酱等多种方式。</div>
         %PUSH_CHANNELS%
       </div>
       
       <div class="section">
-        <div class="section-title">👤 管理员设置</div>
+        <div class="section-title">管理员设置</div>
         <div class="form-group">
           <label>管理员手机号</label>
-          <input type="text" name="adminPhone" value="%ADMIN_PHONE%" placeholder="13800138000">
+          <input type="text" name="adminPhone" value="%ADMIN_PHONE%" placeholder="请输入发送命令的完整手机号">
         </div>
       </div>
       
       <div class="section">
-        <div class="section-title">🚫 号码黑名单</div>
-        <div class="hint" style="margin-bottom:15px;">每行一个号码，来自黑名单号码的短信将被忽略。</div>
+        <div class="section-title">号码黑名单</div>
+        <div class="hint" style="margin-bottom:15px;">每行一个号码，来自黑名单的短信将被忽略。</div>
         <div class="form-group">
           <label>黑名单号码</label>
           <textarea name="numberBlackList" rows="5">%NUMBER_BLACK_LIST%</textarea>
         </div>
       </div>
       
-      <button type="submit">💾 保存配置</button>
+      <button type="submit">保存配置</button>
     </form>
   </div>
   <script>
@@ -209,105 +264,182 @@ static const char kToolsPageHtml[] = R"rawliteral(
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>工具箱</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-    .container { max-width: 600px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-    h1 { color: #333; text-align: center; }
-    .form-group { margin-bottom: 15px; }
-    label { display: block; margin-bottom: 5px; font-weight: bold; color: #555; }
-    input[type="text"], textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; box-sizing: border-box; }
-    textarea { resize: vertical; min-height: 100px; }
-    button { width: 100%; padding: 12px; background: #2196F3; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; margin-top: 10px; }
-    button:hover { background: #1976D2; }
-    .btn-query { background: #9C27B0; }
-    .btn-query:hover { background: #7B1FA2; }
-    .btn-info { background: #607D8B; }
-    .btn-info:hover { background: #455A64; }
-    button:disabled { background: #ccc; cursor: not-allowed; }
-    .section { border: 1px solid #ddd; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
-    .section-title { font-size: 18px; color: #333; margin-bottom: 10px; }
-    .status { padding: 10px; background: #e7f3fe; border-left: 4px solid #2196F3; margin-bottom: 20px; }
-    .nav { display: flex; gap: 10px; margin-bottom: 20px; }
-    .nav a { flex: 1; text-align: center; padding: 10px; background: #eee; border-radius: 5px; text-decoration: none; color: #333; }
-    .nav a.active { background: #2196F3; color: white; }
-    .char-count { font-size: 12px; color: #888; text-align: right; }
-    .hint { font-size: 12px; color: #888; margin-top: 5px; }
-    .result-box { margin-top: 10px; padding: 10px; border-radius: 5px; display: none; }
-    .result-success { background: #e8f5e9; border-left: 4px solid #4CAF50; color: #2e7d32; }
-    .result-error { background: #ffebee; border-left: 4px solid #f44336; color: #c62828; }
-    .result-loading { background: #fff3e0; border-left: 4px solid #FF9800; color: #e65100; }
-    .result-info { background: #e3f2fd; border-left: 4px solid #2196F3; color: #1565c0; }
-    .info-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-    .info-table td { padding: 5px 8px; border-bottom: 1px solid #ddd; }
-    .info-table td:first-child { font-weight: bold; width: 40%; color: #555; }
-    .btn-group { display: flex; gap: 10px; flex-wrap: wrap; }
-    .btn-group button { flex: 1; min-width: 120px; }
-    #atLog { background: #333; color: #00ff00; font-family: 'Courier New', Courier, monospace; min-height: 150px; max-height: 300px; overflow-y: auto; padding: 10px; border-radius: 5px; margin-bottom: 10px; font-size: 13px; white-space: pre-wrap; word-break: break-all; }
-    .at-input-group { display: flex; gap: 10px; }
+    :root {
+      --primary: #3b82f6;
+      --glass-bg: rgba(255, 255, 255, 0.6);
+      --glass-border-light: rgba(255, 255, 255, 0.8);
+      --glass-border-dark: rgba(255, 255, 255, 0.2);
+      --text-main: #1e293b;
+      --text-sub: #64748b;
+    }
+
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+      margin: 0; padding: 20px; 
+      background-color: #e2e8f0;
+      background-image: 
+        radial-gradient(at 10% 10%, rgba(191, 219, 254, 0.8) 0px, transparent 50%),
+        radial-gradient(at 90% 10%, rgba(221, 214, 254, 0.8) 0px, transparent 50%),
+        radial-gradient(at 50% 90%, rgba(204, 251, 241, 0.8) 0px, transparent 50%);
+      background-attachment: fixed;
+      color: var(--text-main);
+    }
+
+    .container { 
+      max-width: 600px; margin: 0 auto; 
+      background: var(--glass-bg); 
+      backdrop-filter: blur(24px) saturate(120%); 
+      -webkit-backdrop-filter: blur(24px) saturate(120%);
+      padding: 32px; 
+      border-radius: 24px; 
+      border-top: 1.5px solid var(--glass-border-light);
+      border-left: 1.5px solid var(--glass-border-light);
+      border-right: 1px solid var(--glass-border-dark);
+      border-bottom: 1px solid var(--glass-border-dark);
+      box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.15), 0 0 0 1px rgba(255,255,255,0.3) inset; 
+    }
+
+    h1 { font-size: 22px; font-weight: 600; text-align: center; margin: 0 0 28px 0; letter-spacing: 0.5px; }
+    
+    .nav { display: flex; gap: 12px; margin-bottom: 28px; padding: 6px; background: rgba(255,255,255,0.4); border-radius: 16px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.02); border: 1px solid rgba(255,255,255,0.5); }
+    .nav a { flex: 1; text-align: center; padding: 10px; border-radius: 12px; text-decoration: none; color: var(--text-sub); font-size: 14px; transition: all 0.2s; font-weight: 500; }
+    .nav a.active { background: #ffffff; color: var(--primary); box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+
+    .status { padding: 14px; background: rgba(59, 130, 246, 0.08); border-radius: 14px; margin-bottom: 24px; font-size: 13px; text-align: center; color: #1e3a8a; border: 1px solid rgba(59, 130, 246, 0.15); }
+
+    .section { 
+      background: rgba(255, 255, 255, 0.35); 
+      padding: 24px; margin-bottom: 24px; border-radius: 20px; 
+      border: 1px solid var(--glass-border-light);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.02);
+    }
+    .section-title { font-size: 15px; font-weight: 600; margin-bottom: 16px; color: var(--text-main); }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; margin-bottom: 8px; font-size: 12px; font-weight: 500; color: var(--text-sub); }
+    
+    input, textarea { 
+      width: 100%; padding: 14px; 
+      background: rgba(255, 255, 255, 0.5);
+      border: 1px solid rgba(255,255,255,0.8); 
+      border-radius: 12px; box-sizing: border-box;
+      font-size: 14px; color: var(--text-main);
+      box-shadow: inset 0 2px 5px rgba(0,0,0,0.02);
+      transition: all 0.2s ease;
+    }
+    input:focus, textarea:focus { outline: none; background: rgba(255, 255, 255, 0.9); border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1), inset 0 2px 5px rgba(0,0,0,0.01); }
+    
+    .char-count { font-size: 12px; color: var(--text-sub); text-align: right; margin-top: 5px; }
+    .hint { font-size: 12px; color: var(--text-sub); margin-bottom: 12px; line-height: 1.5; }
+    
+    button { 
+      width: 100%; padding: 14px; 
+      background: var(--primary); 
+      color: white; border: none; border-radius: 12px; 
+      cursor: pointer; font-size: 14px; font-weight: 600;
+      box-shadow: 0 8px 16px rgba(59, 130, 246, 0.25), inset 0 1px 1px rgba(255,255,255,0.2);
+      transition: all 0.2s; margin-top: 8px;
+    }
+    button:hover { transform: translateY(-1px); box-shadow: 0 10px 20px rgba(59, 130, 246, 0.3), inset 0 1px 1px rgba(255,255,255,0.2); }
+    button:active { transform: translateY(1px); box-shadow: 0 2px 4px rgba(59, 130, 246, 0.2); }
+    button:disabled { background: #94a3b8; box-shadow: none; cursor: not-allowed; transform: none; }
+
+    .btn-group { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+    .btn-group button { flex: 1; margin-top: 0; min-width: 120px; }
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.4);
+      color: var(--text-main);
+      border: 1px solid rgba(255, 255, 255, 0.6);
+      box-shadow: 0 4px 6px rgba(0,0,0,0.02);
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.7);
+      border-color: rgba(255, 255, 255, 0.9);
+      transform: translateY(-1px);
+    }
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.15);
+      color: #b91c1c;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    .btn-danger:hover {
+      background: rgba(239, 68, 68, 0.25);
+    }
+    
+    .result-box { margin-top: 15px; padding: 15px; border-radius: 12px; display: none; font-size: 13px; line-height: 1.6; background: rgba(255,255,255,0.4); border: 1px solid rgba(255,255,255,0.6); box-shadow: inset 0 2px 5px rgba(0,0,0,0.02); }
+    .result-success { background: rgba(187, 247, 208, 0.6); border-left: 4px solid #22c55e; color: #166534; }
+    .result-error { background: rgba(254, 202, 202, 0.6); border-left: 4px solid #ef4444; color: #991b1b; }
+    .result-loading { background: rgba(254, 240, 138, 0.6); border-left: 4px solid #eab308; color: #854d0e; }
+    .result-info { background: rgba(191, 219, 254, 0.6); border-left: 4px solid #3b82f6; color: #1e40af; }
+    
+    #atLog { background: rgba(15, 23, 42, 0.8); color: #4ade80; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; min-height: 160px; max-height: 300px; overflow-y: auto; padding: 16px; border-radius: 14px; margin-bottom: 12px; font-size: 13px; line-height: 1.6; border: 1px solid rgba(255,255,255,0.1); word-break: break-all; white-space: pre-wrap; }
+    .at-input-group { display: flex; gap: 12px; }
     .at-input-group input { flex: 1; font-family: monospace; }
-    .at-input-group button { width: auto; min-width: 80px; margin-top: 0; }
+    .at-input-group button { width: auto; min-width: 90px; margin-top: 0; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>📱 短信转发器</h1>
+    <h1>短信转发器</h1>
     <div class="nav">
-      <a href="/">⚙️ 系统配置</a>
-      <a href="/tools" class="active">🧰 工具箱</a>
+      <a href="/">系统配置</a>
+      <a href="/tools" class="active">工具箱</a>
     </div>
     <div class="status" id="status">设备IP: <strong>%IP%</strong></div>
     
     <form action="/sendsms" method="POST">
       <div class="section">
-        <div class="section-title">📤 发送短信</div>
+        <div class="section-title">发送短信</div>
         <div class="form-group">
           <label>目标号码</label>
-          <input type="text" name="phone" placeholder="13800138000" required>
+          <input type="text" name="phone" placeholder="请输入接收短信的完整手机号" required>
         </div>
         <div class="form-group">
           <label>短信内容</label>
           <textarea name="content" placeholder="请输入短信内容..." required oninput="updateCount(this)"></textarea>
           <div class="char-count">已输入 <span id="charCount">0</span> 字符</div>
         </div>
-        <button type="submit">📨 发送短信</button>
+        <button type="submit">发送短信</button>
       </div>
     </form>
     
-    <div class="section">
-      <div class="section-title">📊 模组信息查询</div>
+<div class="section">
+      <div class="section-title">模组信息查询</div>
       <div class="btn-group">
-        <button type="button" class="btn-query" onclick="queryInfo('ati')">📋 固件信息</button>
-        <button type="button" class="btn-query" onclick="queryInfo('signal')">📶 信号质量</button>
+        <button type="button" class="btn-secondary" onclick="queryInfo('ati')">固件信息</button>
+        <button type="button" class="btn-secondary" onclick="queryInfo('signal')">信号质量</button>
       </div>
       <div class="btn-group">
-        <button type="button" class="btn-info" onclick="queryInfo('siminfo')">💳 SIM卡信息</button>
-        <button type="button" class="btn-info" onclick="queryInfo('network')">🌍 网络状态</button>
+        <button type="button" class="btn-secondary" onclick="queryInfo('siminfo')">SIM卡信息</button>
+        <button type="button" class="btn-secondary" onclick="queryInfo('network')">网络状态</button>
       </div>
       <div class="btn-group">
-        <button type="button" class="btn-info" onclick="queryInfo('wifi')" style="background:#00BCD4;">📡 WiFi状态</button>
+        <button type="button" class="btn-secondary" onclick="queryInfo('wifi')">WiFi状态</button>
       </div>
       <div class="result-box" id="queryResult"></div>
     </div>
     
-    
     <div class="section">
-      <div class="section-title">✈️ 模组控制</div>
+      <div class="section-title">模组控制</div>
       <div class="btn-group">
-        <button type="button" id="flightBtn" onclick="toggleFlightMode()" style="background:#E91E63;">✈️ 切换飞行模式</button>
-        <button type="button" onclick="queryFlightMode()" style="background:#9C27B0;">🔍 查询状态</button>
+        <button type="button" id="flightBtn" class="btn-danger" onclick="toggleFlightMode()">切换飞行模式</button>
+        <button type="button" class="btn-secondary" onclick="queryFlightMode()">查询状态</button>
       </div>
-      <div class="hint">飞行模式关闭时模组可正常收发短信，开启后将关闭射频无法使用移动网络</div>
+      <div class="hint">
+        开启后将关闭模组蜂窝射频，SIM 不会驻网，无法收发短信。<br>
+        该操作不影响设备自身的 Wi‑Fi 管理页面。
+      </div>
       <div class="result-box" id="flightResult"></div>
     </div>
 
     <div class="section">
-      <div class="section-title">💻 AT 指令调试</div>
+      <div class="section-title">AT 指令调试</div>
       <div id="atLog">等待输入指令...</div>
       <div class="at-input-group">
         <input type="text" id="atCmd" placeholder="输入 AT 指令，如: AT+CSQ">
         <button type="button" onclick="sendAT()" id="atBtn">发送</button>
       </div>
-      <div class="btn-group" style="margin-top:10px;">
-        <button type="button" class="btn-info" onclick="clearATLog()">🧹 清空日志</button>
+      <div class="btn-group" style="margin-top:12px;">
+        <button type="button" class="btn-secondary" onclick="clearATLog()">清空日志</button>
       </div>
       <div class="hint">直接向模组串口发送指令并接收响应，请谨慎操作</div>
     </div>
@@ -423,10 +555,10 @@ static const char kToolsPageHtml[] = R"rawliteral(
         b.style.color = '#fff';
         b.textContent = '> ';
       } else if (type === 'error') {
-        b.style.color = '#f44336';
+        b.style.color = '#f87171';
         b.textContent = '❌ ';
       } else {
-        b.style.color = '#4CAF50';
+        b.style.color = '#4ade80';
         b.textContent = '[RESP] ';
       }
       

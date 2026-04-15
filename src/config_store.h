@@ -27,7 +27,7 @@ constexpr int kMaxWifiCredentials = 5;  ///< Number of saved Wi-Fi credentials.
 
 /** Default web credentials used until the user saves custom values. */
 #define DEFAULT_WEB_USER "admin"
-#define DEFAULT_WEB_PASS "admin123"
+#define DEFAULT_WEB_PASS "admin"
 
 /** @brief One configured outbound push channel. */
 struct PushChannel {

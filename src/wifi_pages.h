@@ -13,24 +13,40 @@ static const char kProvisionPageHtml[] = R"rawliteral(
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Wi-Fi 配网</title>
   <style>
+    :root {
+      --primary: #3b82f6;
+      --primary-strong: #1f7ae0;
+      --text-main: #1e293b;
+      --text-sub: #64748b;
+      --glass-bg: rgba(255, 255, 255, 0.56);
+      --glass-border-light: rgba(255, 255, 255, 0.78);
+      --glass-border-dark: rgba(148, 163, 184, 0.14);
+    }
     body {
-      font-family: Arial, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       margin: 0;
       padding: 16px;
-      background: #f4f6fb;
-      color: #243042;
+      background-color: #e2e8f0;
+      background-image:
+        radial-gradient(at 10% 10%, rgba(191, 219, 254, 0.82) 0px, transparent 50%),
+        radial-gradient(at 90% 10%, rgba(221, 214, 254, 0.78) 0px, transparent 48%),
+        radial-gradient(at 50% 90%, rgba(204, 251, 241, 0.72) 0px, transparent 52%);
+      background-attachment: fixed;
+      color: var(--text-main);
     }
     .container {
       max-width: 760px;
       margin: 0 auto;
     }
     .hero {
-      background: linear-gradient(135deg, #1f7ae0, #38b6ff);
+      background: linear-gradient(135deg, #1f7ae0, #38b6ff 58%, #7dd3fc);
       color: white;
-      padding: 20px;
-      border-radius: 16px;
-      margin-bottom: 16px;
-      box-shadow: 0 12px 30px rgba(31, 122, 224, 0.2);
+      padding: 22px;
+      border-radius: 20px;
+      margin-bottom: 18px;
+      border-top: 1px solid rgba(255, 255, 255, 0.35);
+      border-left: 1px solid rgba(255, 255, 255, 0.22);
+      box-shadow: 0 20px 36px rgba(31, 122, 224, 0.22);
     }
     .hero h1 {
       margin: 0 0 8px;
@@ -39,19 +55,26 @@ static const char kProvisionPageHtml[] = R"rawliteral(
     .hero p {
       margin: 0;
       line-height: 1.5;
-      opacity: 0.95;
+      opacity: 0.96;
+      max-width: 54ch;
     }
     .card {
-      background: white;
-      border-radius: 16px;
+      background: var(--glass-bg);
+      backdrop-filter: blur(22px) saturate(120%);
+      -webkit-backdrop-filter: blur(22px) saturate(120%);
+      border-radius: 18px;
       padding: 16px;
       margin-bottom: 16px;
-      box-shadow: 0 8px 20px rgba(36, 48, 66, 0.08);
+      border-top: 1px solid var(--glass-border-light);
+      border-left: 1px solid var(--glass-border-light);
+      border-right: 1px solid var(--glass-border-dark);
+      border-bottom: 1px solid var(--glass-border-dark);
+      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
     }
     .section-title {
       font-size: 18px;
-      font-weight: bold;
-      color: #243042;
+      font-weight: 600;
+      color: var(--text-main);
     }
     .section-head {
       display: flex;
@@ -62,8 +85,8 @@ static const char kProvisionPageHtml[] = R"rawliteral(
     .scan-indicator {
       width: 14px;
       height: 14px;
-      border: 2px solid #cfdcf3;
-      border-top-color: #1f7ae0;
+      border: 2px solid rgba(59, 130, 246, 0.18);
+      border-top-color: var(--primary-strong);
       border-radius: 50%;
       opacity: 0;
       transition: opacity 0.2s ease;
@@ -73,24 +96,27 @@ static const char kProvisionPageHtml[] = R"rawliteral(
       opacity: 1;
     }
     .status-box {
-      border-left: 4px solid #1f7ae0;
-      background: #eef5ff;
-      padding: 12px;
-      border-radius: 10px;
+      border-left: 4px solid var(--primary-strong);
+      background: rgba(59, 130, 246, 0.08);
+      padding: 13px 14px;
+      border-radius: 12px;
       line-height: 1.6;
+      border: 1px solid rgba(59, 130, 246, 0.12);
     }
     .status-box.warn {
-      border-left-color: #c98300;
-      background: #fff6e1;
+      border-left-color: #d97706;
+      background: rgba(245, 158, 11, 0.09);
+      border-color: rgba(245, 158, 11, 0.16);
     }
     .handoff {
       display: none;
       margin-top: 12px;
-      border-left: 4px solid #2e7d32;
-      background: #eaf8ee;
-      padding: 12px;
-      border-radius: 10px;
+      border-left: 4px solid #10b981;
+      background: rgba(16, 185, 129, 0.09);
+      padding: 13px 14px;
+      border-radius: 12px;
       line-height: 1.6;
+      border: 1px solid rgba(16, 185, 129, 0.14);
     }
     .network-list,
     .credential-list {
@@ -103,10 +129,11 @@ static const char kProvisionPageHtml[] = R"rawliteral(
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      padding: 12px;
-      border: 1px solid #d9e2ef;
-      border-radius: 12px;
-      background: #fbfdff;
+      padding: 13px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.72);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.48);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
     }
     .network-meta,
     .credential-meta {
@@ -115,8 +142,8 @@ static const char kProvisionPageHtml[] = R"rawliteral(
     }
     .network-name,
     .credential-name {
-      font-weight: bold;
-      color: #243042;
+      font-weight: 600;
+      color: var(--text-main);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -124,8 +151,9 @@ static const char kProvisionPageHtml[] = R"rawliteral(
     .network-extra,
     .credential-extra {
       font-size: 12px;
-      color: #6a778b;
-      margin-top: 4px;
+      color: var(--text-sub);
+      margin-top: 5px;
+      line-height: 1.45;
     }
     .actions {
       display: flex;
@@ -134,26 +162,40 @@ static const char kProvisionPageHtml[] = R"rawliteral(
     }
     button {
       border: none;
-      border-radius: 10px;
+      border-radius: 12px;
       padding: 10px 14px;
       cursor: pointer;
       font-size: 14px;
+      font-weight: 600;
+      transition: transform 0.18s ease, box-shadow 0.18s ease,
+                  background-color 0.18s ease;
     }
     button.primary {
-      background: #1f7ae0;
+      background: var(--primary-strong);
       color: white;
+      box-shadow: 0 8px 16px rgba(31, 122, 224, 0.22);
+    }
+    button.primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 18px rgba(31, 122, 224, 0.26);
     }
     button.danger {
-      background: #ffe8e8;
-      color: #b3261e;
+      background: rgba(239, 68, 68, 0.13);
+      color: #b91c1c;
+      border: 1px solid rgba(239, 68, 68, 0.22);
+    }
+    button.danger:hover {
+      background: rgba(239, 68, 68, 0.2);
     }
     button:disabled {
       opacity: 0.6;
       cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
     }
     .hint {
       font-size: 12px;
-      color: #6a778b;
+      color: var(--text-sub);
       line-height: 1.6;
     }
     .toolbar {
@@ -163,21 +205,40 @@ static const char kProvisionPageHtml[] = R"rawliteral(
       margin-top: 12px;
     }
     .empty {
-      color: #6a778b;
+      color: var(--text-sub);
       font-size: 14px;
+      text-align: center;
+      padding: 6px 0;
     }
     .badge {
       display: inline-block;
       font-size: 11px;
       border-radius: 999px;
-      padding: 2px 8px;
+      padding: 3px 9px;
       margin-left: 6px;
-      background: #e8f0fe;
-      color: #1f7ae0;
+      background: rgba(59, 130, 246, 0.12);
+      color: var(--primary-strong);
+      border: 1px solid rgba(59, 130, 246, 0.16);
     }
     a.link {
       color: #0f5fc6;
       word-break: break-all;
+      text-decoration: none;
+      font-weight: 500;
+    }
+    a.link:hover {
+      text-decoration: underline;
+    }
+    @media (max-width: 640px) {
+      body {
+        padding: 14px;
+      }
+      .hero {
+        padding: 18px;
+      }
+      .hero h1 {
+        font-size: 24px;
+      }
     }
     @keyframes scan-spin {
       from { transform: rotate(0deg); }
