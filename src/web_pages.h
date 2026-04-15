@@ -77,6 +77,7 @@ static const char kConfigPageHtml[] = R"rawliteral(
       transition: all 0.2s ease;
     }
     input:focus, textarea:focus { outline: none; background: rgba(255, 255, 255, 0.9); border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1), inset 0 2px 5px rgba(0,0,0,0.01); }
+    textarea { resize: vertical; min-height: 96px; }
     
     .warning { padding: 12px 16px; background: rgba(245, 158, 11, 0.1); border-radius: 12px; margin-bottom: 16px; font-size: 12px; color: #b45309; line-height: 1.6; border: 1px solid rgba(245, 158, 11, 0.2); }
     .hint { font-size: 12px; color: var(--text-sub); margin-bottom: 12px; line-height: 1.5; }
@@ -327,6 +328,7 @@ static const char kToolsPageHtml[] = R"rawliteral(
       transition: all 0.2s ease;
     }
     input:focus, textarea:focus { outline: none; background: rgba(255, 255, 255, 0.9); border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1), inset 0 2px 5px rgba(0,0,0,0.01); }
+    textarea { resize: vertical; min-height: 110px; }
     
     .char-count { font-size: 12px; color: var(--text-sub); text-align: right; margin-top: 5px; }
     .hint { font-size: 12px; color: var(--text-sub); margin-bottom: 12px; line-height: 1.5; }

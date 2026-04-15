@@ -292,7 +292,8 @@ static const char kProvisionPageHtml[] = R"rawliteral(
       statusFailures: 0,
       lastStatus: null,
       lastStatusSuccessAt: 0,
-      statusRequestInFlight: false
+      statusRequestInFlight: false,
+      postConnectRefreshQueued: false
     };
 
     function encodeForm(data) {
@@ -387,7 +388,33 @@ static const char kProvisionPageHtml[] = R"rawliteral(
       return !!(uiState.lastStatus && uiState.lastStatus.connectInProgress);
     }
 
+    function queuePostConnectRefresh() {
+      if (uiState.postConnectRefreshQueued) {
+        return;
+      }
+
+      uiState.postConnectRefreshQueued = true;
+      setTimeout(function() {
+        uiState.postConnectRefreshQueued = false;
+        refreshNetworks();
+        refreshSavedCredentials();
+      }, 50);
+    }
+
     function renderStatus(data) {
+      var previousStatus = uiState.lastStatus;
+      var connectionFinished =
+        !!(previousStatus && previousStatus.connectInProgress && !data.connectInProgress);
+      var staChanged =
+        !!(data.staConnected &&
+           (!previousStatus ||
+            !previousStatus.staConnected ||
+            previousStatus.staSsid !== data.staSsid));
+      var enteredStableMode =
+        !!(previousStatus &&
+           previousStatus.mode !== data.mode &&
+           (data.mode === 'handoff' || data.mode === 'connected'));
+
       uiState.deviceReachable = true;
       uiState.statusFailures = 0;
       uiState.lastStatus = data;
@@ -416,6 +443,10 @@ static const char kProvisionPageHtml[] = R"rawliteral(
       } else {
         handoffBox.style.display = 'none';
         handoffBox.innerHTML = '';
+      }
+
+      if ((connectionFinished && data.staConnected) || staChanged || enteredStableMode) {
+        queuePostConnectRefresh();
       }
     }
 
@@ -570,7 +601,7 @@ static const char kProvisionPageHtml[] = R"rawliteral(
       postForm('/provision/delete', { ssid: ssid })
         .then(function(data) {
           alert(data.message);
-          refreshSavedCredentials();
+          refreshAll();
         })
         .catch(function(error) {
           alert('请求失败：' + error);

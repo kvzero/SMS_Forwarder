@@ -129,6 +129,25 @@ void WifiRuntime::GetStatusSnapshot(WifiStatusSnapshot& snapshot) const {
 
 void WifiRuntime::GetVisibleNetworks(VisibleWifiList& list) const {
   list = visible_networks_;
+
+  AppConfig config;
+  if (!LoadConfigSnapshot(config)) {
+    return;
+  }
+
+  const String current_ssid = WiFi.status() == WL_CONNECTED ? WiFi.SSID() : "";
+  for (uint8_t i = 0; i < list.count && i < kMaxVisibleWifiNetworks; ++i) {
+    list.items[i].saved = false;
+    list.items[i].current = list.items[i].ssid == current_ssid;
+
+    for (uint8_t credential_index = 0; credential_index < config.wifiCredentialCount;
+         ++credential_index) {
+      if (config.wifiCredentials[credential_index].ssid == list.items[i].ssid) {
+        list.items[i].saved = true;
+        break;
+      }
+    }
+  }
 }
 
 void WifiRuntime::GetSavedCredentials(SavedWifiList& list) const {
