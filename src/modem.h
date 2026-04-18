@@ -77,6 +77,7 @@ class Modem {
   bool SendAtAndWaitOK(const char* cmd, unsigned long timeout);
   bool WaitCereg();
   void ModemPowerCycle();
+  bool SendEncodedPdu(PDU& encoder, int pdu_length);
 
   void InitConcatBuffer();
   int FindOrCreateConcatSlot(int ref_number, const char* sender, int reported_total_parts);

@@ -25,7 +25,7 @@ static const char kConfigPageHtml[] = R"rawliteral(
 
     body { 
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
-      margin: 0; padding: 20px; 
+      margin: 0; padding: 18px; 
       background-color: #e2e8f0;
       background-image: 
         radial-gradient(at 10% 10%, rgba(191, 219, 254, 0.8) 0px, transparent 50%),
@@ -36,11 +36,11 @@ static const char kConfigPageHtml[] = R"rawliteral(
     }
 
     .container { 
-      max-width: 600px; margin: 0 auto; 
+      max-width: 680px; margin: 0 auto; 
       background: var(--glass-bg); 
       backdrop-filter: blur(24px) saturate(120%); 
       -webkit-backdrop-filter: blur(24px) saturate(120%);
-      padding: 32px; 
+      padding: 20px; 
       border-radius: 24px; 
       border-top: 1.5px solid var(--glass-border-light);
       border-left: 1.5px solid var(--glass-border-light);
@@ -55,11 +55,13 @@ static const char kConfigPageHtml[] = R"rawliteral(
     .nav a { flex: 1; text-align: center; padding: 10px; border-radius: 12px; text-decoration: none; color: var(--text-sub); font-size: 14px; transition: all 0.2s; font-weight: 500; }
     .nav a.active { background: #ffffff; color: var(--primary); box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
 
-    .status { padding: 14px; background: rgba(59, 130, 246, 0.08); border-radius: 14px; margin-bottom: 24px; font-size: 13px; text-align: center; color: #1e3a8a; border: 1px solid rgba(59, 130, 246, 0.15); }
+    .status { padding: 14px 16px; background: rgba(59, 130, 246, 0.08); border-radius: 14px; margin-bottom: 20px; font-size: 13px; color: #1e3a8a; border: 1px solid rgba(59, 130, 246, 0.15); }
+    .status-line { line-height: 1.8; font-weight: 600; }
+    .status-line strong { font-weight: 600; }
 
     .section { 
       background: rgba(255, 255, 255, 0.35); 
-      padding: 24px; margin-bottom: 24px; border-radius: 20px; 
+      padding: 20px; margin-bottom: 20px; border-radius: 20px; 
       border: 1px solid var(--glass-border-light);
       box-shadow: 0 4px 12px rgba(0,0,0,0.02);
     }
@@ -67,7 +69,12 @@ static const char kConfigPageHtml[] = R"rawliteral(
     .form-group { margin-bottom: 16px; }
     label { display: block; margin-bottom: 8px; font-size: 12px; font-weight: 500; color: var(--text-sub); }
     
-    input, textarea, select { 
+    input[type="text"],
+    input[type="password"],
+    input[type="number"],
+    input[type="datetime-local"],
+    textarea,
+    select { 
       width: 100%; padding: 14px; 
       background: rgba(255, 255, 255, 0.5);
       border: 1px solid rgba(255,255,255,0.8); 
@@ -75,9 +82,35 @@ static const char kConfigPageHtml[] = R"rawliteral(
       font-size: 14px; color: var(--text-main);
       box-shadow: inset 0 2px 5px rgba(0,0,0,0.02);
       transition: all 0.2s ease;
+      -webkit-appearance: none; 
+      appearance: none;
+      max-width: 100%;
     }
-    input:focus, textarea:focus { outline: none; background: rgba(255, 255, 255, 0.9); border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1), inset 0 2px 5px rgba(0,0,0,0.01); }
+    input[type="text"]:focus,
+    input[type="password"]:focus,
+    input[type="number"]:focus,
+    input[type="datetime-local"]:focus,
+    textarea:focus,
+    select:focus { outline: none; background: rgba(255, 255, 255, 0.9); border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1), inset 0 2px 5px rgba(0,0,0,0.01); }
     textarea { resize: vertical; min-height: 96px; }
+    input[type="checkbox"],
+    input[type="radio"] {
+      width: auto;
+      padding: 0;
+      margin: 0;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+      accent-color: var(--primary);
+      -webkit-appearance: auto;
+      appearance: auto;
+    }
+    input[type="date"],
+    input[type="time"] {
+      min-height: 48px;
+      height: 48px;
+    }
     
     .warning { padding: 12px 16px; background: rgba(245, 158, 11, 0.1); border-radius: 12px; margin-bottom: 16px; font-size: 12px; color: #b45309; line-height: 1.6; border: 1px solid rgba(245, 158, 11, 0.2); }
     .hint { font-size: 12px; color: var(--text-sub); margin-bottom: 12px; line-height: 1.5; }
@@ -94,9 +127,10 @@ static const char kConfigPageHtml[] = R"rawliteral(
     button:active { transform: translateY(1px); box-shadow: 0 2px 4px rgba(59, 130, 246, 0.2); }
 
     .push-channel { border: 1px solid var(--glass-border-light); padding: 16px; margin-bottom: 16px; border-radius: 16px; background: rgba(255,255,255,0.2); }
-    .push-channel-header { display: flex; align-items: center; margin-bottom: 12px; font-size: 14px; font-weight: 500; }
+    .push-channel-header { display: flex; align-items: center; margin-bottom: 0; font-size: 14px; font-weight: 500; }
     .push-channel-header input[type="checkbox"] { width: auto; height: 16px; margin-right: 12px; accent-color: var(--primary); }
-    .push-channel-body { display: none; }
+    .push-channel-header .label-inline { display: inline-flex; align-items: center; margin-bottom: 0; font-size: inherit; font-weight: inherit; color: var(--text-main); }
+    .push-channel-body { display: none; padding-top: 12px; }
     .push-channel.enabled .push-channel-body { display: block; }
     .push-type-hint { font-size: 12px; color: var(--text-sub); margin-top: 10px; padding: 12px; background: rgba(255,255,255,0.4); border-radius: 10px; border: 1px solid rgba(255,255,255,0.5); line-height: 1.5; }
   </style>
@@ -108,7 +142,10 @@ static const char kConfigPageHtml[] = R"rawliteral(
       <a href="/" class="active">系统配置</a>
       <a href="/tools">工具箱</a>
     </div>
-    <div class="status" id="status">设备IP: <strong>%IP%</strong></div>
+    <div class="status" id="status">
+      <div class="status-line">设备IP：<strong>%IP%</strong></div>
+      <div class="status-line">%CONFIG_CLOCK_HINT%</div>
+    </div>
     
     <form action="/save" method="POST">
       <div class="section">
@@ -246,15 +283,255 @@ static const char kConfigPageHtml[] = R"rawliteral(
         document.getElementById('key2' + idx).placeholder = '12345678:ABC...';
       }
     }
+    function formatStatusClock(epochSeconds, clockValid) {
+      if (!epochSeconds || epochSeconds <= 0) {
+        return '当前设备时间：未同步';
+      }
+      var date = new Date(epochSeconds * 1000);
+      var pad = function(value) { return String(value).padStart(2, '0'); };
+      var label = date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' +
+        pad(date.getHours()) + ':' + pad(date.getMinutes());
+      return clockValid ? ('当前设备时间：' + label) : '当前设备时间：未同步';
+    }
+    function startStatusClock(id) {
+      var hint = document.getElementById(id);
+      if (!hint) return;
+      var baseEpoch = parseInt(hint.dataset.epoch || '0', 10);
+      var clockValid = hint.dataset.valid === '1';
+      var baseMs = Date.now();
+      function renderClock() {
+        var currentEpoch = baseEpoch + Math.floor((Date.now() - baseMs) / 1000);
+        hint.textContent = formatStatusClock(currentEpoch, clockValid);
+      }
+      renderClock();
+      setInterval(renderClock, 10000);
+    }
     document.addEventListener('DOMContentLoaded', function() {
       for (var i = 0; i < 5; i++) {
         toggleChannel(i);
         updateTypeHint(i);
       }
+      startStatusClock('configClockHint');
     });
   </script>
 </body>
 </html>
+)rawliteral";
+
+static const char kScheduledToolsSectionHtml[] = R"rawliteral(
+    <form action="/tools/scheduled/save" method="POST" id="scheduledForm">
+      <input type="hidden" name="taskId" value="%SCHEDULED_TASK_ID%">
+      <input type="hidden" name="taskEnabled" value="%SCHEDULED_TASK_ENABLED_VALUE%">
+      <input type="hidden" name="firstRunEpoch" id="scheduledFirstRunEpoch" value="%SCHEDULED_FIRST_RUN_EPOCH%">
+      <input type="hidden" name="endAtEpoch" id="scheduledEndAtEpoch" value="%SCHEDULED_END_AT_EPOCH%">
+      <div class="form-group">
+        <label>任务名称</label>
+        <input type="text" name="taskName" value="%SCHEDULED_TASK_NAME%" placeholder="请输入任务名称（可选）">
+      </div>
+      <div class="form-group">
+        <label>目标号码</label>
+        <input type="text" name="taskPhone" value="%SCHEDULED_TASK_PHONE%" placeholder="请输入接收短信的完整手机号" required>
+      </div>
+      <div class="form-group">
+        <label>短信内容</label>
+        <textarea name="taskBody" id="scheduledBody" placeholder="请输入短信内容..." required oninput="updateScheduledCount(this)">%SCHEDULED_TASK_BODY%</textarea>
+        <div class="char-count">已输入 <span id="scheduledCharCount">0</span> 字符</div>
+      </div>
+      <div class="form-group">
+        <label>首次发送</label>
+        <div class="btn-group">
+          <button type="button" class="btn-secondary" id="firstRunAtBtn" onclick="setFirstRunMode('at')">指定时间</button>
+          <button type="button" class="btn-secondary" id="firstRunDelayBtn" onclick="setFirstRunMode('delay')">延后发送</button>
+        </div>
+        <input type="hidden" name="firstRunMode" id="scheduledFirstRunMode" value="at">
+        <div id="scheduledAtGroup">
+          <input type="datetime-local" id="scheduledFirstRunAt" data-epoch="%SCHEDULED_FIRST_RUN_EPOCH%">
+        </div>
+        <div id="scheduledDelayGroup" style="display:none;">
+          <div class="inline-pair-fixed">
+            <input type="number" min="1" step="1" id="scheduledDelayValue" placeholder="延后数值">
+            <select id="scheduledDelayUnit">
+              <option value="minutes">分钟</option>
+              <option value="hours">小时</option>
+              <option value="days">天</option>
+              <option value="weeks">周</option>
+              <option value="months">月</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="inline-checkbox"><input type="checkbox" name="repeatEnabled" id="scheduledRepeatEnabled"%SCHEDULED_REPEAT_ENABLED_CHECKED% onchange="toggleRepeatSettings()"> 重复发送</label>
+      </div>
+      <div id="scheduledRepeatGroup" style="display:none;">
+        <div class="form-group">
+          <label>重复间隔</label>
+          <div class="inline-pair-fixed">
+            <input type="number" min="1" step="1" name="repeatEvery" value="%SCHEDULED_REPEAT_EVERY%">
+            <select name="repeatUnit">
+              <option value="minutes"%SCHEDULED_REPEAT_UNIT_MINUTES%>分钟</option>
+              <option value="hours"%SCHEDULED_REPEAT_UNIT_HOURS%>小时</option>
+              <option value="days"%SCHEDULED_REPEAT_UNIT_DAYS%>天</option>
+              <option value="weeks"%SCHEDULED_REPEAT_UNIT_WEEKS%>周</option>
+              <option value="months"%SCHEDULED_REPEAT_UNIT_MONTHS%>月</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>结束条件</label>
+          <select name="endPolicy" id="scheduledEndPolicy" onchange="toggleEndPolicy()">
+            <option value="never"%SCHEDULED_END_POLICY_NEVER%>永不结束</option>
+            <option value="date"%SCHEDULED_END_POLICY_DATE%>截止日期</option>
+            <option value="count"%SCHEDULED_END_POLICY_COUNT%>发送次数</option>
+          </select>
+        </div>
+        <div id="scheduledEndAtGroup" class="scheduled-conditional-group" style="display:none;">
+          <input type="datetime-local" id="scheduledEndAt" data-epoch="%SCHEDULED_END_AT_EPOCH%">
+        </div>
+        <div id="scheduledMaxRunsGroup" class="scheduled-conditional-group" style="display:none;">
+          <input type="number" min="1" step="1" name="maxRuns" value="%SCHEDULED_MAX_RUNS%">
+        </div>
+      </div>
+      <div class="btn-group">
+        <button type="submit" onclick="return prepareScheduledForm()">%SCHEDULED_PRIMARY_BUTTON%</button>
+        %SCHEDULED_CANCEL_BLOCK%
+      </div>
+    </form>
+)rawliteral";
+
+static const char kScheduledTaskListSectionHtml[] = R"rawliteral(
+    <div class="section" id="scheduled-tasks">
+      <div class="section-title">定时任务列表</div>
+      %SCHEDULED_TASK_LIST%
+    </div>
+)rawliteral";
+
+static const char kScheduledToolsScript[] = R"rawliteral(
+    function toDatetimeLocalValue(epoch) {
+      if (!epoch || epoch <= 0) return '';
+      var date = new Date(epoch * 1000);
+      var pad = function(value) { return String(value).padStart(2, '0'); };
+      return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' +
+        pad(date.getHours()) + ':' + pad(date.getMinutes());
+    }
+
+    function updateScheduledCount(el) {
+      document.getElementById('scheduledCharCount').textContent = el.value.length;
+    }
+
+    function initScheduledToast() {
+      var toast = document.getElementById('scheduledToast');
+      if (!toast) return;
+      setTimeout(function() {
+        toast.classList.add('scheduled-toast-hide');
+      }, 2600);
+      setTimeout(function() {
+        if (toast && toast.parentNode) {
+          toast.parentNode.removeChild(toast);
+        }
+      }, 3200);
+    }
+
+    function formatScheduledClock(epochSeconds, clockValid) {
+      if (!epochSeconds || epochSeconds <= 0) {
+        return '当前设备时间：未同步';
+      }
+      var date = new Date(epochSeconds * 1000);
+      var pad = function(value) { return String(value).padStart(2, '0'); };
+      var label = date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' +
+        pad(date.getHours()) + ':' + pad(date.getMinutes());
+      return clockValid ? ('当前设备时间：' + label) : '当前设备时间：未同步';
+    }
+
+    function startScheduledClock() {
+      var hint = document.getElementById('scheduledClockHint');
+      if (!hint) return;
+
+      var baseEpoch = parseInt(hint.dataset.epoch || '0', 10);
+      var clockValid = hint.dataset.valid === '1';
+      var baseMs = Date.now();
+
+      function renderClock() {
+        var currentEpoch = baseEpoch + Math.floor((Date.now() - baseMs) / 1000);
+        hint.textContent = formatScheduledClock(currentEpoch, clockValid);
+      }
+
+      renderClock();
+      setInterval(renderClock, 10000);
+    }
+
+    function setFirstRunMode(mode) {
+      document.getElementById('scheduledFirstRunMode').value = mode;
+      document.getElementById('scheduledAtGroup').style.display = mode === 'at' ? 'block' : 'none';
+      document.getElementById('scheduledDelayGroup').style.display = mode === 'delay' ? 'block' : 'none';
+      document.getElementById('firstRunAtBtn').classList.toggle('btn-secondary', mode !== 'at');
+      document.getElementById('firstRunDelayBtn').classList.toggle('btn-secondary', mode !== 'delay');
+    }
+
+    function toggleRepeatSettings() {
+      document.getElementById('scheduledRepeatGroup').style.display =
+        document.getElementById('scheduledRepeatEnabled').checked ? 'block' : 'none';
+    }
+
+    function toggleEndPolicy() {
+      var mode = document.getElementById('scheduledEndPolicy').value;
+      document.getElementById('scheduledEndAtGroup').style.display = mode === 'date' ? 'block' : 'none';
+      document.getElementById('scheduledMaxRunsGroup').style.display = mode === 'count' ? 'block' : 'none';
+    }
+
+    function prepareScheduledForm() {
+      var firstRunMode = document.getElementById('scheduledFirstRunMode').value;
+      var firstRunEpoch = 0;
+      if (firstRunMode === 'at') {
+        var firstRunAt = document.getElementById('scheduledFirstRunAt').value;
+        if (!firstRunAt) {
+          alert('请选择首次发送时间。');
+          return false;
+        }
+        firstRunEpoch = Math.floor(new Date(firstRunAt).getTime() / 1000);
+      } else {
+        var delayValue = parseInt(document.getElementById('scheduledDelayValue').value, 10);
+        var delayUnit = document.getElementById('scheduledDelayUnit').value;
+        if (!delayValue || delayValue <= 0) {
+          alert('请输入有效的延后数值。');
+          return false;
+        }
+        var delaySeconds = delayValue * 60;
+        if (delayUnit === 'hours') delaySeconds = delayValue * 3600;
+        if (delayUnit === 'days') delaySeconds = delayValue * 86400;
+        if (delayUnit === 'weeks') delaySeconds = delayValue * 604800;
+        if (delayUnit === 'months') delaySeconds = delayValue * 2629800;
+        firstRunEpoch = Math.floor(Date.now() / 1000) + delaySeconds;
+      }
+      document.getElementById('scheduledFirstRunEpoch').value = String(firstRunEpoch);
+
+      if (document.getElementById('scheduledEndPolicy').value === 'date') {
+        var endAt = document.getElementById('scheduledEndAt').value;
+        if (!endAt) {
+          alert('请选择结束时间。');
+          return false;
+        }
+        document.getElementById('scheduledEndAtEpoch').value =
+          String(Math.floor(new Date(endAt).getTime() / 1000));
+      } else {
+        document.getElementById('scheduledEndAtEpoch').value = '0';
+      }
+      return true;
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      var body = document.getElementById('scheduledBody');
+      if (body) updateScheduledCount(body);
+      var firstRunAt = document.getElementById('scheduledFirstRunAt');
+      if (firstRunAt) firstRunAt.value = toDatetimeLocalValue(parseInt(firstRunAt.dataset.epoch || '0', 10));
+      var endAt = document.getElementById('scheduledEndAt');
+      if (endAt) endAt.value = toDatetimeLocalValue(parseInt(endAt.dataset.epoch || '0', 10));
+      setFirstRunMode('at');
+      toggleRepeatSettings();
+      toggleEndPolicy();
+      startScheduledClock();
+      initScheduledToast();
+    });
 )rawliteral";
 
 static const char kToolsPageHtml[] = R"rawliteral(
@@ -276,7 +553,7 @@ static const char kToolsPageHtml[] = R"rawliteral(
 
     body { 
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
-      margin: 0; padding: 20px; 
+      margin: 0; padding: 18px; 
       background-color: #e2e8f0;
       background-image: 
         radial-gradient(at 10% 10%, rgba(191, 219, 254, 0.8) 0px, transparent 50%),
@@ -287,11 +564,11 @@ static const char kToolsPageHtml[] = R"rawliteral(
     }
 
     .container { 
-      max-width: 600px; margin: 0 auto; 
+      max-width: 680px; margin: 0 auto; 
       background: var(--glass-bg); 
       backdrop-filter: blur(24px) saturate(120%); 
       -webkit-backdrop-filter: blur(24px) saturate(120%);
-      padding: 32px; 
+      padding: 20px; 
       border-radius: 24px; 
       border-top: 1.5px solid var(--glass-border-light);
       border-left: 1.5px solid var(--glass-border-light);
@@ -306,11 +583,13 @@ static const char kToolsPageHtml[] = R"rawliteral(
     .nav a { flex: 1; text-align: center; padding: 10px; border-radius: 12px; text-decoration: none; color: var(--text-sub); font-size: 14px; transition: all 0.2s; font-weight: 500; }
     .nav a.active { background: #ffffff; color: var(--primary); box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
 
-    .status { padding: 14px; background: rgba(59, 130, 246, 0.08); border-radius: 14px; margin-bottom: 24px; font-size: 13px; text-align: center; color: #1e3a8a; border: 1px solid rgba(59, 130, 246, 0.15); }
+    .status { padding: 14px 16px; background: rgba(59, 130, 246, 0.08); border-radius: 14px; margin-bottom: 20px; font-size: 13px; color: #1e3a8a; border: 1px solid rgba(59, 130, 246, 0.15); }
+    .status-line { line-height: 1.8; font-weight: 600; }
+    .status-line strong { font-weight: 600; }
 
     .section { 
       background: rgba(255, 255, 255, 0.35); 
-      padding: 24px; margin-bottom: 24px; border-radius: 20px; 
+      padding: 20px; margin-bottom: 20px; border-radius: 20px; 
       border: 1px solid var(--glass-border-light);
       box-shadow: 0 4px 12px rgba(0,0,0,0.02);
     }
@@ -318,7 +597,12 @@ static const char kToolsPageHtml[] = R"rawliteral(
     .form-group { margin-bottom: 16px; }
     label { display: block; margin-bottom: 8px; font-size: 12px; font-weight: 500; color: var(--text-sub); }
     
-    input, textarea { 
+    input[type="text"],
+    input[type="password"],
+    input[type="number"],
+    input[type="datetime-local"],
+    textarea,
+    select { 
       width: 100%; padding: 14px; 
       background: rgba(255, 255, 255, 0.5);
       border: 1px solid rgba(255,255,255,0.8); 
@@ -326,10 +610,36 @@ static const char kToolsPageHtml[] = R"rawliteral(
       font-size: 14px; color: var(--text-main);
       box-shadow: inset 0 2px 5px rgba(0,0,0,0.02);
       transition: all 0.2s ease;
+      -webkit-appearance: none; 
+      appearance: none;
+      max-width: 100%;
     }
-    input:focus, textarea:focus { outline: none; background: rgba(255, 255, 255, 0.9); border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1), inset 0 2px 5px rgba(0,0,0,0.01); }
+    input[type="text"]:focus,
+    input[type="password"]:focus,
+    input[type="number"]:focus,
+    input[type="datetime-local"]:focus,
+    textarea:focus,
+    select:focus { outline: none; background: rgba(255, 255, 255, 0.9); border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1), inset 0 2px 5px rgba(0,0,0,0.01); }
     textarea { resize: vertical; min-height: 110px; }
-    
+    input[type="checkbox"],
+    input[type="radio"] {
+      width: auto;
+      padding: 0;
+      margin: 0;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+      accent-color: var(--primary);
+      -webkit-appearance: auto;
+      appearance: auto;
+    }
+    input[type="datetime-local"] {
+      min-height: 48px;
+      height: 48px;
+      display: block;
+      line-height: 20px;
+    }
     .char-count { font-size: 12px; color: var(--text-sub); text-align: right; margin-top: 5px; }
     .hint { font-size: 12px; color: var(--text-sub); margin-bottom: 12px; line-height: 1.5; }
     
@@ -347,6 +657,9 @@ static const char kToolsPageHtml[] = R"rawliteral(
 
     .btn-group { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
     .btn-group button { flex: 1; margin-top: 0; min-width: 120px; }
+    .btn-group a, .btn-group form { flex: 1; min-width: 120px; margin: 0; }
+    .btn-group a { text-decoration: none; }
+    .btn-group a button, .btn-group form button { width: 100%; }
     .btn-secondary {
       background: rgba(255, 255, 255, 0.4);
       color: var(--text-main);
@@ -366,12 +679,201 @@ static const char kToolsPageHtml[] = R"rawliteral(
     .btn-danger:hover {
       background: rgba(239, 68, 68, 0.25);
     }
+
+    .send-mode-toggle { margin-bottom: 18px; }
+    .send-mode-toggle button.active {
+      background: var(--primary);
+      color: white;
+      border-color: rgba(59, 130, 246, 0.6);
+      box-shadow: 0 8px 16px rgba(59, 130, 246, 0.18);
+    }
+    .send-panel { display: none; }
+    .send-panel.active { display: block; }
+
+    .inline-checkbox {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--text-main);
+      margin-bottom: 0;
+    }
+    .inline-checkbox input[type="checkbox"] {
+      width: auto;
+      margin: 0;
+    }
+    .inline-pair {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 150px;
+      gap: 12px;
+    }
+    .inline-pair-fixed {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 96px;
+      gap: 10px;
+    }
+    .scheduled-conditional-group {
+      margin: 0 0 16px;
+    }
+    .task-card {
+      background: rgba(255,255,255,0.42);
+      border: 1px solid rgba(255,255,255,0.65);
+      border-radius: 16px;
+      padding: 16px;
+      margin-top: 12px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.35);
+    }
+    .task-card:first-child { margin-top: 0; }
+    .task-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .task-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-main);
+      line-height: 1.4;
+    }
+    .task-badge {
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+      background: rgba(255,255,255,0.7);
+      color: var(--text-sub);
+      border: 1px solid rgba(255,255,255,0.75);
+    }
+    .task-badge.active {
+      background: rgba(187, 247, 208, 0.7);
+      color: #166534;
+      border-color: rgba(34, 197, 94, 0.2);
+    }
+    .task-badge.paused {
+      background: rgba(254, 240, 138, 0.7);
+      color: #854d0e;
+      border-color: rgba(234, 179, 8, 0.2);
+    }
+    .task-meta {
+      font-size: 12px;
+      color: var(--text-sub);
+      line-height: 1.7;
+    }
+    .task-meta strong {
+      color: var(--text-main);
+      font-weight: 600;
+    }
+    .task-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .task-actions a, .task-actions form {
+      flex: 1 1 120px;
+      margin: 0;
+      text-decoration: none;
+    }
+    .task-actions button {
+      width: 100%;
+      margin-top: 0;
+      padding: 11px 12px;
+      font-size: 13px;
+    }
+
+    @media (max-width: 640px) {
+      body {
+        padding: 14px;
+      }
+      .container {
+        padding: 16px 14px;
+      }
+      .section {
+        padding: 16px;
+      }
+      .inline-pair {
+        grid-template-columns: 1fr;
+      }
+      .task-card-header {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .task-badge {
+        align-self: flex-start;
+      }
+    }
+    @media (max-width: 380px) {
+      .inline-pair-fixed {
+        grid-template-columns: 1fr;
+      }
+    }
     
     .result-box { margin-top: 15px; padding: 15px; border-radius: 12px; display: none; font-size: 13px; line-height: 1.6; background: rgba(255,255,255,0.4); border: 1px solid rgba(255,255,255,0.6); box-shadow: inset 0 2px 5px rgba(0,0,0,0.02); }
     .result-success { background: rgba(187, 247, 208, 0.6); border-left: 4px solid #22c55e; color: #166534; }
     .result-error { background: rgba(254, 202, 202, 0.6); border-left: 4px solid #ef4444; color: #991b1b; }
     .result-loading { background: rgba(254, 240, 138, 0.6); border-left: 4px solid #eab308; color: #854d0e; }
     .result-info { background: rgba(191, 219, 254, 0.6); border-left: 4px solid #3b82f6; color: #1e40af; }
+    .scheduled-toast {
+      position: fixed;
+      left: 50%;
+      top: 20px;
+      z-index: 9999;
+      
+      width: fit-content;
+      min-width: 100px;
+      max-width: calc(100vw - 40px);
+
+      padding: 12px 24px;
+      text-align: center;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+
+      border-radius: 14px;
+      font-size: 14px;
+      line-height: 1.4;
+      border: 1px solid rgba(255,255,255,0.7);
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.15);
+      backdrop-filter: blur(16px) saturate(120%);
+      -webkit-backdrop-filter: blur(16px) saturate(120%); 
+
+      animation: toastSlideDown 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+      transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+    @keyframes toastSlideDown {
+      0% {
+        opacity: 0;
+        transform: translate(-50%, -100%);
+      }
+      100% {
+        opacity: 1;
+        transform: translate(-50%, 0);
+      }
+    }
+    .scheduled-toast-success {
+      background: rgba(187, 247, 208, 0.92);
+      color: #166534;
+    }
+    .scheduled-toast-error {
+      background: rgba(254, 202, 202, 0.94);
+      color: #991b1b;
+    }
+  .scheduled-toast-hide {
+      animation: toastSlideUp 0.3s ease forwards !important;
+    }
+  @keyframes toastSlideUp {
+    0% {
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }
+    100% {
+      opacity: 0;
+      transform: translate(-50%, -30px);
+    }
+  }
     
     #atLog { background: rgba(15, 23, 42, 0.8); color: #4ade80; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; min-height: 160px; max-height: 300px; overflow-y: auto; padding: 16px; border-radius: 14px; margin-bottom: 12px; font-size: 13px; line-height: 1.6; border: 1px solid rgba(255,255,255,0.1); word-break: break-all; white-space: pre-wrap; }
     .at-input-group { display: flex; gap: 12px; }
@@ -380,29 +882,45 @@ static const char kToolsPageHtml[] = R"rawliteral(
   </style>
 </head>
 <body>
+  %SCHEDULED_MESSAGE_TOAST%
+
   <div class="container">
     <h1>短信转发器</h1>
     <div class="nav">
       <a href="/">系统配置</a>
       <a href="/tools" class="active">工具箱</a>
     </div>
-    <div class="status" id="status">设备IP: <strong>%IP%</strong></div>
+    <div class="status" id="status">
+      <div class="status-line">设备IP：<strong>%IP%</strong></div>
+      <div class="status-line">%TOOLS_CLOCK_HINT%</div>
+    </div>
     
-    <form action="/sendsms" method="POST">
-      <div class="section">
-        <div class="section-title">发送短信</div>
-        <div class="form-group">
-          <label>目标号码</label>
-          <input type="text" name="phone" placeholder="请输入接收短信的完整手机号" required>
-        </div>
-        <div class="form-group">
-          <label>短信内容</label>
-          <textarea name="content" placeholder="请输入短信内容..." required oninput="updateCount(this)"></textarea>
-          <div class="char-count">已输入 <span id="charCount">0</span> 字符</div>
-        </div>
-        <button type="submit">发送短信</button>
+    <div class="section" id="send-section">
+      <div class="section-title">发送短信</div>
+      <div class="btn-group send-mode-toggle">
+        <button type="button" class="btn-secondary" id="sendNowTab" onclick="setSendMode('now')">立即发送</button>
+        <button type="button" class="btn-secondary" id="sendScheduledTab" onclick="setSendMode('scheduled')">定时发送</button>
       </div>
-    </form>
+      <div class="send-panel" id="sendNowPanel">
+        <form action="/sendsms" method="POST">
+          <div class="form-group">
+            <label>目标号码</label>
+            <input type="text" name="phone" placeholder="请输入接收短信的完整手机号" required>
+          </div>
+          <div class="form-group">
+            <label>短信内容</label>
+            <textarea name="content" placeholder="请输入短信内容..." required oninput="updateCount(this)"></textarea>
+            <div class="char-count">已输入 <span id="charCount">0</span> 字符</div>
+          </div>
+          <button type="submit">发送短信</button>
+        </form>
+      </div>
+      <div class="send-panel" id="sendScheduledPanel">
+        %SCHEDULED_SECTION%
+      </div>
+    </div>
+    
+    %SCHEDULED_TASKS_SECTION%
     
 <div class="section">
       <div class="section-title">模组信息查询</div>
@@ -450,6 +968,18 @@ static const char kToolsPageHtml[] = R"rawliteral(
     function updateCount(el) {
       document.getElementById('charCount').textContent = el.value.length;
     }
+
+    function setSendMode(mode) {
+      var nowActive = mode !== 'scheduled';
+      document.getElementById('sendNowPanel').classList.toggle('active', nowActive);
+      document.getElementById('sendScheduledPanel').classList.toggle('active', !nowActive);
+      document.getElementById('sendNowTab').classList.toggle('active', nowActive);
+      document.getElementById('sendScheduledTab').classList.toggle('active', !nowActive);
+      document.getElementById('sendNowTab').classList.toggle('btn-secondary', !nowActive);
+      document.getElementById('sendScheduledTab').classList.toggle('btn-secondary', nowActive);
+    }
+
+    %SCHEDULED_SCRIPT%
     
     function queryInfo(type) {
       var result = document.getElementById('queryResult');
@@ -621,6 +1151,9 @@ static const char kToolsPageHtml[] = R"rawliteral(
       if (event.key === 'Enter') {
         sendAT();
       }
+    });
+    document.addEventListener('DOMContentLoaded', function() {
+      setSendMode('%TOOLS_INITIAL_MODE%' === 'scheduled' ? 'scheduled' : 'now');
     });
   </script>
 </body>

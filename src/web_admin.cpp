@@ -16,6 +16,241 @@ constexpr TickType_t kWebSyncPollSlice = pdMS_TO_TICKS(50);
 constexpr unsigned long kPendingRequestLifetimeMs = 60000;
 constexpr TickType_t kSendSmsWaitTicks = pdMS_TO_TICKS(40000);
 
+String EscapeHtml(const String& value) {
+  String escaped = value;
+  escaped.replace("&", "&amp;");
+  escaped.replace("<", "&lt;");
+  escaped.replace(">", "&gt;");
+  escaped.replace("\"", "&quot;");
+  escaped.replace("'", "&#39;");
+  return escaped;
+}
+
+const char* CheckedAttr(bool value) {
+  return value ? " checked" : "";
+}
+
+const char* SelectedAttr(bool value) {
+  return value ? " selected" : "";
+}
+
+String FormatTimeLabel(time_t utc) {
+  if (utc <= 0) {
+    return "未设置";
+  }
+
+  struct tm parts;
+#if defined(_WIN32)
+  localtime_s(&parts, &utc);
+#else
+  localtime_r(&utc, &parts);
+#endif
+
+  char buffer[32];
+  std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02d %02d:%02d",
+                parts.tm_year + 1900, parts.tm_mon + 1, parts.tm_mday,
+                parts.tm_hour, parts.tm_min);
+  return String(buffer);
+}
+
+String RepeatSummary(const ScheduledTaskRecord& task) {
+  if (!task.repeat_enabled) {
+    return "仅发送一次";
+  }
+
+  String unit;
+  switch (task.repeat_unit) {
+    case ScheduledIntervalUnit::Minutes:
+      unit = "分钟";
+      break;
+    case ScheduledIntervalUnit::Hours:
+      unit = "小时";
+      break;
+    case ScheduledIntervalUnit::Days:
+      unit = "天";
+      break;
+    case ScheduledIntervalUnit::Weeks:
+      unit = "周";
+      break;
+    case ScheduledIntervalUnit::Months:
+      unit = "个月";
+      break;
+  }
+
+  String summary = "每";
+  summary += String(task.repeat_every);
+  summary += unit;
+  summary += "，";
+  switch (task.end_policy) {
+    case ScheduledEndPolicy::Never:
+      summary += "不结束";
+      break;
+    case ScheduledEndPolicy::OnDate:
+      summary += "到 ";
+      summary += FormatTimeLabel(task.end_at_utc);
+      summary += " 结束";
+      break;
+    case ScheduledEndPolicy::AfterRuns:
+      summary += "发送 ";
+      summary += String(task.max_runs);
+      summary += " 次后结束";
+      break;
+  }
+  return summary;
+}
+
+struct ScheduledToolsPageState {
+  ScheduledTaskDraft draft;
+  bool editing = false;
+  bool scheduled_mode = false;
+  time_t now_utc = 0;
+  bool clock_valid = false;
+  size_t task_count = 0;
+  ScheduledTaskRecord tasks[kMaxScheduledTasks];
+  String message;
+  bool message_success = false;
+};
+
+void BuildScheduledToolsPageState(WebServer& server, ScheduledSms& scheduled_sms,
+                                  const ScheduledTaskDraft* draft,
+                                  const String& scheduled_message,
+                                  bool scheduled_success,
+                                  ScheduledToolsPageState& state) {
+  if (draft != nullptr) {
+    state.draft = *draft;
+    state.editing = state.draft.id != 0;
+  } else if (server.hasArg("edit")) {
+    const uint32_t task_id = static_cast<uint32_t>(server.arg("edit").toInt());
+    String load_message;
+    if (scheduled_sms.LoadTask(task_id, state.draft, load_message)) {
+      state.editing = true;
+    }
+  }
+
+  if (!state.editing && draft == nullptr) {
+    state.draft.enabled = true;
+    state.draft.repeat_unit = ScheduledIntervalUnit::Days;
+  }
+
+  state.scheduled_mode = state.editing || scheduled_message.length() > 0 ||
+                         server.arg("mode") == "scheduled";
+  state.task_count = scheduled_sms.CopyTasks(state.tasks, kMaxScheduledTasks);
+  state.now_utc = time(nullptr);
+  state.clock_valid = state.now_utc >= 100000;
+  state.message = scheduled_message;
+  state.message_success = scheduled_success;
+}
+
+String BuildScheduledTaskListHtml(const ScheduledTaskRecord* tasks, size_t task_count) {
+  if (task_count == 0) {
+    return "<div class=\"hint\">当前还没有定时任务。</div>";
+  }
+
+  String html;
+  for (size_t index = 0; index < task_count; ++index) {
+    const ScheduledTaskRecord& task = tasks[index];
+    html += "<div class=\"task-card\">";
+    html += "<div class=\"task-card-header\">";
+    html += "<div class=\"task-title\">" +
+            EscapeHtml(task.name.length() > 0 ? task.name : task.phone) + "</div>";
+    html += "<div class=\"task-badge ";
+    html += task.enabled ? "active" : "paused";
+    html += "\">";
+    html += task.enabled ? "启用中" : "已暂停";
+    html += "</div></div>";
+    html += "<div class=\"task-meta\"><strong>号码：</strong>" + EscapeHtml(task.phone) +
+            "</div>";
+    html += "<div class=\"task-meta\"><strong>内容摘要：</strong>" +
+            EscapeHtml(task.preview) + "</div>";
+    html += "<div class=\"task-meta\"><strong>下次执行：</strong>" +
+            EscapeHtml(FormatTimeLabel(task.next_run_utc)) + "</div>";
+    html += "<div class=\"task-meta\"><strong>重复规则：</strong>" +
+            EscapeHtml(RepeatSummary(task)) + "</div>";
+    if (task.last_result.length() > 0) {
+      html += "<div class=\"task-meta\"><strong>最近结果：</strong>" +
+              EscapeHtml(task.last_result) + "</div>";
+    }
+    html += "<div class=\"task-actions\">";
+    html += "<a href=\"/tools?mode=scheduled&edit=" + String(task.id) +
+            "#scheduled-section\"><button type=\"button\" class=\"btn-secondary\">编辑</button></a>";
+    html += "<form action=\"/tools/scheduled/toggle\" method=\"POST\"><input type=\"hidden\" name=\"taskId\" value=\"" +
+            String(task.id) + "\"><input type=\"hidden\" name=\"enabled\" value=\"" +
+            String(task.enabled ? 0 : 1) +
+            "\"><button type=\"submit\" class=\"btn-secondary\">" +
+            String(task.enabled ? "暂停" : "启用") + "</button></form>";
+    html += "<form action=\"/tools/scheduled/run\" method=\"POST\"><input type=\"hidden\" name=\"taskId\" value=\"" +
+            String(task.id) +
+            "\"><button type=\"submit\" class=\"btn-secondary\">立即执行</button></form>";
+    html += "<form action=\"/tools/scheduled/delete\" method=\"POST\" onsubmit=\"return confirm('确定删除这个定时任务吗？');\"><input type=\"hidden\" name=\"taskId\" value=\"" +
+            String(task.id) +
+            "\"><button type=\"submit\" class=\"btn-danger\">删除</button></form>";
+    html += "</div></div>";
+  }
+
+  return html;
+}
+
+String RenderScheduledToolsSection(const ScheduledToolsPageState& state) {
+  String cancel_block;
+  if (state.editing) {
+    cancel_block =
+        "<a href=\"/tools?mode=scheduled#scheduled-section\"><button type=\"button\" class=\"btn-secondary\">取消编辑</button></a>";
+  }
+
+  String section = String(kScheduledToolsSectionHtml);
+  section.replace("%SCHEDULED_TASK_ID%", String(state.draft.id));
+  section.replace("%SCHEDULED_FIRST_RUN_EPOCH%",
+                  String(static_cast<long long>(state.draft.first_run_utc)));
+  section.replace("%SCHEDULED_END_AT_EPOCH%",
+                  String(static_cast<long long>(state.draft.end_at_utc)));
+  section.replace("%SCHEDULED_TASK_NAME%", EscapeHtml(state.draft.name));
+  section.replace("%SCHEDULED_TASK_PHONE%", EscapeHtml(state.draft.phone));
+  section.replace("%SCHEDULED_TASK_BODY%", EscapeHtml(state.draft.body));
+  section.replace("%SCHEDULED_TASK_ENABLED_VALUE%",
+                  String(state.draft.enabled ? 1 : 0));
+  section.replace("%SCHEDULED_REPEAT_ENABLED_CHECKED%",
+                  String(CheckedAttr(state.draft.repeat_enabled)));
+  section.replace("%SCHEDULED_REPEAT_EVERY%",
+                  String(state.draft.repeat_every == 0 ? 1 : state.draft.repeat_every));
+  section.replace(
+      "%SCHEDULED_REPEAT_UNIT_MINUTES%",
+      String(SelectedAttr(state.draft.repeat_unit == ScheduledIntervalUnit::Minutes)));
+  section.replace(
+      "%SCHEDULED_REPEAT_UNIT_HOURS%",
+      String(SelectedAttr(state.draft.repeat_unit == ScheduledIntervalUnit::Hours)));
+  section.replace(
+      "%SCHEDULED_REPEAT_UNIT_DAYS%",
+      String(SelectedAttr(state.draft.repeat_unit == ScheduledIntervalUnit::Days)));
+  section.replace(
+      "%SCHEDULED_REPEAT_UNIT_WEEKS%",
+      String(SelectedAttr(state.draft.repeat_unit == ScheduledIntervalUnit::Weeks)));
+  section.replace(
+      "%SCHEDULED_REPEAT_UNIT_MONTHS%",
+      String(SelectedAttr(state.draft.repeat_unit == ScheduledIntervalUnit::Months)));
+  section.replace("%SCHEDULED_END_POLICY_NEVER%",
+                  String(SelectedAttr(state.draft.end_policy ==
+                                      ScheduledEndPolicy::Never)));
+  section.replace("%SCHEDULED_END_POLICY_DATE%",
+                  String(SelectedAttr(state.draft.end_policy ==
+                                      ScheduledEndPolicy::OnDate)));
+  section.replace("%SCHEDULED_END_POLICY_COUNT%",
+                  String(SelectedAttr(state.draft.end_policy ==
+                                      ScheduledEndPolicy::AfterRuns)));
+  section.replace("%SCHEDULED_MAX_RUNS%",
+                  String(state.draft.max_runs == 0 ? 1 : state.draft.max_runs));
+  section.replace("%SCHEDULED_PRIMARY_BUTTON%",
+                  state.editing ? "保存定时任务" : "创建定时任务");
+  section.replace("%SCHEDULED_CANCEL_BLOCK%", cancel_block);
+  return section;
+}
+
+String RenderScheduledTaskListSection(const ScheduledToolsPageState& state) {
+  String section = String(kScheduledTaskListSectionHtml);
+  section.replace("%SCHEDULED_TASK_LIST%",
+                  BuildScheduledTaskListHtml(state.tasks, state.task_count));
+  return section;
+}
+
 const char* WifiModeToString(WifiRuntimeMode mode) {
   switch (mode) {
     case WifiRuntimeMode::TryingSavedNetworks:
@@ -33,12 +268,13 @@ const char* WifiModeToString(WifiRuntimeMode mode) {
 }  // namespace
 
 WebAdmin::WebAdmin(ConfigStore& config_store, SharedConfigState& shared_state,
-                   WifiRuntime& wifi_runtime,
+                   WifiRuntime& wifi_runtime, ScheduledSms& scheduled_sms,
                    QueueHandle_t modem_request_queue, QueueHandle_t web_response_queue,
                    QueueHandle_t app_event_queue)
     : config_store_(config_store),
       shared_state_(shared_state),
       wifi_runtime_(wifi_runtime),
+      scheduled_sms_(scheduled_sms),
       modem_request_queue_(modem_request_queue),
       web_response_queue_(web_response_queue),
       app_event_queue_(app_event_queue),
@@ -53,6 +289,10 @@ void WebAdmin::Begin() {
   server_.on("/tools", [this]() { HandleToolsPage(); });
   server_.on("/sms", [this]() { HandleToolsPage(); });
   server_.on("/sendsms", HTTP_POST, [this]() { HandleSendSms(); });
+  server_.on("/tools/scheduled/save", HTTP_POST, [this]() { HandleScheduledSave(); });
+  server_.on("/tools/scheduled/delete", HTTP_POST, [this]() { HandleScheduledDelete(); });
+  server_.on("/tools/scheduled/toggle", HTTP_POST, [this]() { HandleScheduledToggle(); });
+  server_.on("/tools/scheduled/run", HTTP_POST, [this]() { HandleScheduledRun(); });
   server_.on("/query", [this]() { HandleQuery(); });
   server_.on("/flight", [this]() { HandleFlightMode(); });
   server_.on("/at", [this]() { HandleATCommand(); });
@@ -167,6 +407,30 @@ bool WebAdmin::RequestSendSms(const String& phone, const String& content) {
     return false;
   }
 
+  return response.success;
+}
+
+bool WebAdmin::RequestSendStoredSms(uint32_t task_id, const String& phone,
+                                    String& response_message) {
+  ModemRequest request;
+  request.requestId = AllocateRequestId();
+  request.requester = ModemRequester::Web;
+  request.type = ModemRequestType::SendStoredSms;
+  request.storedTaskId = task_id;
+  CopyString(request.phone, phone);
+
+  if (!SubmitModemRequest(request)) {
+    response_message = "无法提交定时短信发送请求。";
+    return false;
+  }
+
+  ModemResponse response;
+  if (!WaitForModemResponse(request.requestId, response, kSendSmsWaitTicks)) {
+    response_message = "定时短信发送超时。";
+    return false;
+  }
+
+  response_message = response.message;
   return response.success;
 }
 
@@ -321,7 +585,17 @@ void WebAdmin::HandleAdminPage() {
   }
 
   String html = String(kConfigPageHtml);
+  const time_t now_utc = time(nullptr);
+  String config_clock_hint = "当前设备时间：未同步";
+  if (now_utc >= 100000) {
+    config_clock_hint = "当前设备时间：" + FormatTimeLabel(now_utc);
+  }
   html.replace("%IP%", wifi_runtime_.GetPrimaryIpString());
+  html.replace("%CONFIG_CLOCK_HINT%",
+               "<span id=\"configClockHint\" data-epoch=\"" +
+                   String(static_cast<long long>(now_utc)) +
+                   "\" data-valid=\"" + String(now_utc >= 100000 ? "1" : "0") +
+                   "\">" + EscapeHtml(config_clock_hint) + "</span>");
   html.replace("%WEB_USER%", config.webUser);
   html.replace("%WEB_PASS%", config.webPass);
   html.replace("%SMTP_SERVER%", config.smtpServer);
@@ -399,12 +673,43 @@ void WebAdmin::HandleAdminPage() {
   server_.send(200, "text/html", html);
 }
 
-void WebAdmin::HandleToolsPage() {
-  if (!CheckAuth()) return;
+void WebAdmin::SendToolsPage(const ScheduledTaskDraft* draft,
+                             const String& scheduled_message,
+                             bool scheduled_success) {
+  ScheduledToolsPageState state;
+  BuildScheduledToolsPageState(server_, scheduled_sms_, draft, scheduled_message,
+                               scheduled_success, state);
 
   String html = String(kToolsPageHtml);
+  String tools_clock_hint = "当前设备时间：未同步";
+  if (state.clock_valid) {
+    tools_clock_hint = "当前设备时间：" + FormatTimeLabel(state.now_utc);
+  }
   html.replace("%IP%", wifi_runtime_.GetPrimaryIpString());
+  html.replace("%TOOLS_CLOCK_HINT%",
+               "<span id=\"scheduledClockHint\" data-epoch=\"" +
+                   String(static_cast<long long>(state.now_utc)) +
+                   "\" data-valid=\"" + String(state.clock_valid ? "1" : "0") +
+                   "\">" + EscapeHtml(tools_clock_hint) + "</span>");
+  String message_toast;
+  if (state.message.length() > 0) {
+    message_toast = "<div id=\"scheduledToast\" class=\"scheduled-toast ";
+    message_toast += state.message_success ? "scheduled-toast-success" : "scheduled-toast-error";
+    message_toast += "\">";
+    message_toast += EscapeHtml(state.message);
+    message_toast += "</div>";
+  }
+  html.replace("%SCHEDULED_MESSAGE_TOAST%", message_toast);
+  html.replace("%SCHEDULED_SECTION%", RenderScheduledToolsSection(state));
+  html.replace("%SCHEDULED_TASKS_SECTION%", RenderScheduledTaskListSection(state));
+  html.replace("%SCHEDULED_SCRIPT%", kScheduledToolsScript);
+  html.replace("%TOOLS_INITIAL_MODE%", state.scheduled_mode ? "scheduled" : "now");
   server_.send(200, "text/html", html);
+}
+
+void WebAdmin::HandleToolsPage() {
+  if (!CheckAuth()) return;
+  SendToolsPage(nullptr, "", false);
 }
 
 // Modem tools and diagnostic endpoints.
@@ -844,6 +1149,93 @@ void WebAdmin::HandleSendSms() {
   html.replace("%MSG%", result_msg);
 
   server_.send(200, "text/html", html);
+}
+
+void WebAdmin::HandleScheduledSave() {
+  if (!CheckAuth()) return;
+
+  ScheduledTaskDraft draft;
+  draft.id = static_cast<uint32_t>(server_.arg("taskId").toInt());
+  draft.enabled = !server_.hasArg("taskEnabled") || server_.arg("taskEnabled").toInt() != 0;
+  draft.name = server_.arg("taskName");
+  draft.phone = server_.arg("taskPhone");
+  draft.body = server_.arg("taskBody");
+  draft.first_run_utc = static_cast<time_t>(server_.arg("firstRunEpoch").toInt());
+  draft.repeat_enabled = server_.hasArg("repeatEnabled");
+  draft.repeat_every = static_cast<uint32_t>(server_.arg("repeatEvery").toInt());
+
+  const String repeat_unit = server_.arg("repeatUnit");
+  if (repeat_unit == "minutes") {
+    draft.repeat_unit = ScheduledIntervalUnit::Minutes;
+  } else if (repeat_unit == "hours") {
+    draft.repeat_unit = ScheduledIntervalUnit::Hours;
+  } else if (repeat_unit == "weeks") {
+    draft.repeat_unit = ScheduledIntervalUnit::Weeks;
+  } else if (repeat_unit == "months") {
+    draft.repeat_unit = ScheduledIntervalUnit::Months;
+  } else {
+    draft.repeat_unit = ScheduledIntervalUnit::Days;
+  }
+
+  const String end_policy = server_.arg("endPolicy");
+  if (end_policy == "date") {
+    draft.end_policy = ScheduledEndPolicy::OnDate;
+  } else if (end_policy == "count") {
+    draft.end_policy = ScheduledEndPolicy::AfterRuns;
+  } else {
+    draft.end_policy = ScheduledEndPolicy::Never;
+  }
+  draft.end_at_utc = static_cast<time_t>(server_.arg("endAtEpoch").toInt());
+  draft.max_runs = static_cast<uint32_t>(server_.arg("maxRuns").toInt());
+
+  String message;
+  uint32_t saved_task_id = 0;
+  const bool success = scheduled_sms_.UpsertTask(draft, message, &saved_task_id);
+  if (success) {
+    draft = ScheduledTaskDraft{};
+    draft.enabled = true;
+    draft.repeat_unit = ScheduledIntervalUnit::Days;
+  }
+  SendToolsPage(success ? nullptr : &draft, message, success);
+}
+
+void WebAdmin::HandleScheduledDelete() {
+  if (!CheckAuth()) return;
+
+  String message;
+  const uint32_t task_id = static_cast<uint32_t>(server_.arg("taskId").toInt());
+  if (!scheduled_sms_.DeleteTask(task_id, message)) {
+    SendToolsPage(nullptr, message, false);
+    return;
+  }
+  SendToolsPage(nullptr, message, true);
+}
+
+void WebAdmin::HandleScheduledToggle() {
+  if (!CheckAuth()) return;
+
+  String message;
+  const uint32_t task_id = static_cast<uint32_t>(server_.arg("taskId").toInt());
+  const bool enabled = server_.arg("enabled").toInt() != 0;
+  if (!scheduled_sms_.SetTaskEnabled(task_id, enabled, message)) {
+    SendToolsPage(nullptr, message, false);
+    return;
+  }
+  SendToolsPage(nullptr, message, true);
+}
+
+void WebAdmin::HandleScheduledRun() {
+  if (!CheckAuth()) return;
+
+  const uint32_t task_id = static_cast<uint32_t>(server_.arg("taskId").toInt());
+  ScheduledTaskDispatch dispatch;
+  String message;
+  bool success = scheduled_sms_.PrepareManualRun(task_id, dispatch, message);
+  if (success) {
+    success = RequestSendStoredSms(task_id, dispatch.phone, message);
+    scheduled_sms_.CompleteManualRun(task_id, time(nullptr), success, message);
+  }
+  SendToolsPage(nullptr, message, success);
 }
 
 void WebAdmin::HandleSave() {

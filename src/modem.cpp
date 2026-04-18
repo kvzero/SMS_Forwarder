@@ -12,6 +12,7 @@ namespace {
 
 constexpr TickType_t kRetryYieldDelay = pdMS_TO_TICKS(500);
 constexpr const char* kTruncatedSuffixPrefix = "[TRUNCATED: total=";
+constexpr uint8_t kMaxOutboundSmsParts = 64;
 
 void FillSmsMessage(SmsMessage& message, const String& sender, const String& text,
                     const String& timestamp) {
@@ -28,6 +29,62 @@ int ClampConcatTotalParts(int reported_total_parts) {
     return kMaxConcatParts;
   }
   return reported_total_parts;
+}
+
+String Utf8CharacterAt(PDU& encoder, const char* text) {
+  const int utf8_length = encoder.utf8Length(text);
+  if (utf8_length <= 0) {
+    return String(text[0]);
+  }
+
+  String character;
+  for (int index = 0; index < utf8_length && text[index] != '\0'; ++index) {
+    character += text[index];
+  }
+  return character;
+}
+
+bool SplitMultipartSms(const char* phone_number, const String& message,
+                       String (&parts)[kMaxOutboundSmsParts], uint8_t& part_count) {
+  part_count = 0;
+  PDU probe(512);
+  probe.setSCAnumber();
+
+  const char* cursor = message.c_str();
+  String current_part;
+  while (*cursor != '\0') {
+    const String next_character = Utf8CharacterAt(probe, cursor);
+    if (next_character.length() == 0) {
+      return false;
+    }
+
+    const String candidate = current_part + next_character;
+    const int encode_result = probe.encodePDU(phone_number, candidate.c_str(), 1, 2, 1);
+    if (encode_result >= 0) {
+      current_part = candidate;
+      cursor += next_character.length();
+      continue;
+    }
+
+    if (encode_result != PDU::GSM7_TOO_LONG && encode_result != PDU::UCS2_TOO_LONG) {
+      return false;
+    }
+    if (current_part.length() == 0 || part_count >= kMaxOutboundSmsParts) {
+      return false;
+    }
+
+    parts[part_count++] = current_part;
+    current_part = "";
+  }
+
+  if (current_part.length() > 0) {
+    if (part_count >= kMaxOutboundSmsParts) {
+      return false;
+    }
+    parts[part_count++] = current_part;
+  }
+
+  return part_count > 0;
 }
 
 }  // namespace
@@ -204,68 +261,48 @@ bool Modem::SendSms(const char* phone_number, const char* message) {
   Serial.print("SMS content: ");
   Serial.println(message);
 
-  pdu_.setSCAnumber();
-  const int pdu_len = pdu_.encodePDU(phone_number, message);
-  if (pdu_len < 0) {
+  PDU encoder(512);
+  encoder.setSCAnumber();
+  const int pdu_len = encoder.encodePDU(phone_number, message);
+  if (pdu_len >= 0) {
+    return SendEncodedPdu(encoder, pdu_len);
+  }
+
+  if (pdu_len != PDU::GSM7_TOO_LONG && pdu_len != PDU::UCS2_TOO_LONG) {
     Serial.print("PDU encode failed, error code: ");
     Serial.println(pdu_len);
     return false;
   }
 
-  Serial.print("PDU data: ");
-  Serial.println(pdu_.getSMS());
-  Serial.print("PDU length: ");
-  Serial.println(pdu_len);
-
-  String cmgs_cmd = "AT+CMGS=";
-  cmgs_cmd += pdu_len;
-
-  while (serial_.available()) {
-    serial_.read();
-  }
-  serial_.println(cmgs_cmd);
-
-  unsigned long start = millis();
-  bool got_prompt = false;
-  while (millis() - start < 5000) {
-    if (serial_.available()) {
-      const char c = serial_.read();
-      Serial.print(c);
-      if (c == '>') {
-        got_prompt = true;
-        break;
-      }
-    }
-  }
-
-  if (!got_prompt) {
-    Serial.println("Did not receive the '>' prompt");
+  String parts[kMaxOutboundSmsParts];
+  uint8_t part_count = 0;
+  if (!SplitMultipartSms(phone_number, message, parts, part_count)) {
+    Serial.println("Failed to split multipart SMS");
     return false;
   }
 
-  serial_.print(pdu_.getSMS());
-  serial_.write(0x1A);
-
-  start = millis();
-  String response;
-  while (millis() - start < 30000) {
-    while (serial_.available()) {
-      const char c = serial_.read();
-      response += c;
-      Serial.print(c);
-      if (response.indexOf("OK") >= 0) {
-        Serial.println("\nSMS sent successfully");
-        return true;
-      }
-      if (response.indexOf("ERROR") >= 0) {
-        Serial.println("\nSMS send failed");
-        return false;
-      }
+  const unsigned short concat_ref =
+      static_cast<unsigned short>((millis() & 0xFFFFu) == 0 ? 1 : (millis() & 0xFFFFu));
+  Serial.printf("Sending multipart SMS with %u parts\n", part_count);
+  for (uint8_t index = 0; index < part_count; ++index) {
+    PDU part_encoder(512);
+    part_encoder.setSCAnumber();
+    const int part_length =
+        part_encoder.encodePDU(phone_number, parts[index].c_str(), concat_ref,
+                               part_count, index + 1);
+    if (part_length < 0) {
+      Serial.printf("Multipart PDU encode failed at part %u, error %d\n", index + 1,
+                    part_length);
+      return false;
     }
+    if (!SendEncodedPdu(part_encoder, part_length)) {
+      Serial.printf("Multipart SMS send failed at part %u/%u\n", index + 1, part_count);
+      return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(300));
   }
 
-  Serial.println("SMS send timed out");
-  return false;
+  return true;
 }
 
 String Modem::SendAtCommand(const char* cmd, unsigned long timeout) {
@@ -339,6 +376,65 @@ bool Modem::SendAtAndWaitOK(const char* cmd, unsigned long timeout) {
       }
     }
   }
+  return false;
+}
+
+bool Modem::SendEncodedPdu(PDU& encoder, int pdu_length) {
+  Serial.print("PDU data: ");
+  Serial.println(encoder.getSMS());
+  Serial.print("PDU length: ");
+  Serial.println(pdu_length);
+
+  String cmgs_cmd = "AT+CMGS=";
+  cmgs_cmd += pdu_length;
+
+  while (serial_.available()) {
+    serial_.read();
+  }
+  serial_.println(cmgs_cmd);
+
+  unsigned long start = millis();
+  bool got_prompt = false;
+  while (millis() - start < 5000) {
+    if (!serial_.available()) {
+      continue;
+    }
+
+    const char c = serial_.read();
+    Serial.print(c);
+    if (c == '>') {
+      got_prompt = true;
+      break;
+    }
+  }
+
+  if (!got_prompt) {
+    Serial.println("Did not receive the '>' prompt");
+    return false;
+  }
+
+  serial_.print(encoder.getSMS());
+  serial_.write(0x1A);
+
+  start = millis();
+  String response;
+  while (millis() - start < 30000) {
+    while (serial_.available()) {
+      const char c = serial_.read();
+      response += c;
+      Serial.print(c);
+      if (response.indexOf("OK") >= 0) {
+        Serial.println("\nSMS sent successfully");
+        return true;
+      }
+      if (response.indexOf("ERROR") >= 0) {
+        Serial.println("\nSMS send failed");
+        return false;
+      }
+    }
+  }
+
+  Serial.println("SMS send timed out");
   return false;
 }
 

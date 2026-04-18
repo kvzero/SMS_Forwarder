@@ -10,6 +10,7 @@
 #include <freertos/queue.h>
 
 #include "config_store.h"
+#include "scheduled_sms.h"
 #include "task_protocol.h"
 #include "wifi_runtime.h"
 
@@ -26,7 +27,7 @@ class WebAdmin {
    * @param app_event_queue Queue used to notify the app task about config updates.
    */
   WebAdmin(ConfigStore& config_store, SharedConfigState& shared_state,
-           WifiRuntime& wifi_runtime,
+           WifiRuntime& wifi_runtime, ScheduledSms& scheduled_sms,
            QueueHandle_t modem_request_queue, QueueHandle_t web_response_queue,
            QueueHandle_t app_event_queue);
 
@@ -54,6 +55,7 @@ class WebAdmin {
                             TickType_t timeout_ticks);
   bool RequestAtCommand(const String& cmd, unsigned long timeout_ms, String& response);
   bool RequestSendSms(const String& phone, const String& content);
+  bool RequestSendStoredSms(uint32_t task_id, const String& phone, String& response_message);
   uint32_t StartAsyncAtCommand(const String& cmd, unsigned long timeout_ms);
   uint32_t AllocateRequestId();
   void DrainModemResponses();
@@ -62,6 +64,8 @@ class WebAdmin {
   void CleanupPendingRequests();
   String GetDeviceUrl() const;
   String EscapeJson(const String& value) const;
+  void SendToolsPage(const ScheduledTaskDraft* draft, const String& scheduled_message,
+                     bool scheduled_success);
 
   void HandleRoot();
   void HandleAdminPage();
@@ -70,6 +74,10 @@ class WebAdmin {
   void HandleATCommand();
   void HandleQuery();
   void HandleSendSms();
+  void HandleScheduledSave();
+  void HandleScheduledDelete();
+  void HandleScheduledToggle();
+  void HandleScheduledRun();
   void HandleSave();
   void HandleModemResult();
   void HandleProvisionPage();
@@ -83,6 +91,7 @@ class WebAdmin {
   ConfigStore& config_store_;
   SharedConfigState& shared_state_;
   WifiRuntime& wifi_runtime_;
+  ScheduledSms& scheduled_sms_;
   QueueHandle_t modem_request_queue_;
   QueueHandle_t web_response_queue_;
   QueueHandle_t app_event_queue_;

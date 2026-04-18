@@ -5,6 +5,8 @@
 
 #include "wifi_runtime.h"
 
+#include <time.h>
+
 #include <esp_system.h>
 #include <esp_wifi.h>
 
@@ -19,6 +21,7 @@ constexpr uint32_t kScanMaxMsPerChannel = 600;
 constexpr uint8_t kFallbackScanStartChannel = 1;
 constexpr uint8_t kFallbackScanEndChannel = 13;
 constexpr uint8_t kMaxSupportedScanChannel = 14;
+constexpr const char* kLocalTimezone = "CST-8";
 
 bool QueueAppEvent(QueueHandle_t queue, const AppEvent& event,
                    TickType_t timeout_ticks = pdMS_TO_TICKS(100)) {
@@ -49,6 +52,9 @@ WifiRuntime::WifiRuntime(ConfigStore& config_store, SharedConfigState& shared_st
       ntp_sync_started_ms_(0) {}
 
 void WifiRuntime::Begin() {
+  setenv("TZ", kLocalTimezone, 1);
+  tzset();
+
   WiFi.persistent(false);
   WiFi.setAutoReconnect(false);
   WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);

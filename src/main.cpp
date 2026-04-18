@@ -9,6 +9,8 @@
 #include "config_store.h"
 #include "modem.h"
 #include "notifier.h"
+#include "scheduled_sms.h"
+#include "scheduled_store.h"
 #include "sms_inbox.h"
 #include "status_led.h"
 #include "task_protocol.h"
@@ -37,6 +39,8 @@ constexpr UBaseType_t kAppResponseQueueDepth = 4;
 constexpr UBaseType_t kAppEventQueueDepth = 16;
 
 ConfigStore config_store;
+ScheduledStore scheduled_store;
+ScheduledSms scheduled_sms(scheduled_store);
 SharedConfigState shared_state;
 QueueHandle_t modem_request_queue = nullptr;
 QueueHandle_t web_modem_response_queue = nullptr;
@@ -321,6 +325,21 @@ void ProcessModemRequest(Modem& modem, const ModemRequest& request) {
       break;
     }
 
+    case ModemRequestType::SendStoredSms: {
+      String body;
+      String load_message;
+      if (!scheduled_store.LoadTaskBody(request.storedTaskId, body, load_message)) {
+        response.success = false;
+        CopyString(response.message, load_message);
+        break;
+      }
+
+      response.success = modem.SendSms(request.phone, body.c_str());
+      CopyCString(response.message, response.success ? "Stored SMS send completed."
+                                                     : "Stored SMS send failed.");
+      break;
+    }
+
     case ModemRequestType::Reset:
       modem.Reset();
       response.success = true;
@@ -369,39 +388,64 @@ void AppTaskMain(void*) {
 
   for (;;) {
     AppEvent event;
-    if (xQueueReceive(app_event_queue, &event, portMAX_DELAY) != pdTRUE) {
-      continue;
-    }
+    if (xQueueReceive(app_event_queue, &event, pdMS_TO_TICKS(250)) == pdTRUE) {
+      switch (event.type) {
+        case AppEventType::StartupNotice:
+          SendStartupNotice(notifier);
+          break;
 
-    switch (event.type) {
-      case AppEventType::StartupNotice:
-        SendStartupNotice(notifier);
-        break;
+        case AppEventType::ConfigUpdated:
+          SendConfigUpdatedNotice(notifier);
+          break;
 
-      case AppEventType::ConfigUpdated:
-        SendConfigUpdatedNotice(notifier);
-        break;
+        case AppEventType::IncomingSms: {
+          AppConfig config;
+          if (!LoadConfigSnapshot(config, nullptr)) {
+            Serial.println("Failed to load config before processing an SMS");
+            break;
+          }
 
-      case AppEventType::IncomingSms: {
-        AppConfig config;
-        if (!LoadConfigSnapshot(config, nullptr)) {
-          Serial.println("Failed to load config before processing an SMS");
+          const SmsMessage message = ToSmsMessage(event.sms);
+          const InboxAction action = sms_inbox.Process(config, message);
+          HandleInboxAction(action, notifier, next_request_id);
           break;
         }
-
-        const SmsMessage message = ToSmsMessage(event.sms);
-        const InboxAction action = sms_inbox.Process(config, message);
-        HandleInboxAction(action, notifier, next_request_id);
-        break;
       }
+    }
+
+    ScheduledTaskDispatch dispatch;
+    const time_t now_utc = time(nullptr);
+    if (scheduled_sms.PrepareDueRun(now_utc, dispatch)) {
+      ModemRequest request;
+      request.requestId = next_request_id++;
+      request.requester = ModemRequester::App;
+      request.type = ModemRequestType::SendStoredSms;
+      request.storedTaskId = dispatch.task_id;
+      CopyString(request.phone, dispatch.phone);
+
+      bool success = false;
+      String result_message = "Failed to queue stored SMS request.";
+      if (SubmitModemRequest(request, pdMS_TO_TICKS(1000))) {
+        ModemResponse response;
+        if (WaitForAppModemResponse(request.requestId, response,
+                                    pdMS_TO_TICKS(kSendSmsWaitMs))) {
+          success = response.success;
+          result_message = response.message;
+        } else {
+          result_message = "Stored SMS send timed out.";
+        }
+      }
+
+      scheduled_sms.CompleteDueRun(dispatch.task_id, now_utc, success, result_message);
     }
   }
 }
 
 void WebTaskMain(void*) {
   static WifiRuntime wifi_runtime(config_store, shared_state, app_event_queue);
-  static WebAdmin web_admin(config_store, shared_state, wifi_runtime, modem_request_queue,
-                            web_modem_response_queue, app_event_queue);
+  static WebAdmin web_admin(config_store, shared_state, wifi_runtime, scheduled_sms,
+                            modem_request_queue, web_modem_response_queue,
+                            app_event_queue);
   ProvisionButtonState provision_button_state;
   unsigned long last_led_refresh_ms = 0;
 
@@ -456,6 +500,11 @@ void setup() {
 
   config_store.Load(shared_state.config);
   shared_state.configValid = IsConfigValid(shared_state.config);
+
+  String scheduled_init_message;
+  if (!scheduled_sms.Begin(scheduled_init_message)) {
+    HaltSetup(scheduled_init_message.c_str());
+  }
 
   if (xTaskCreate(ModemTaskMain, "ModemTask", kModemTaskStackBytes, nullptr, 4,
                   nullptr) != pdPASS) {
