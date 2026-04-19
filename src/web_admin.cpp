@@ -1279,7 +1279,7 @@ void WebAdmin::HandleSave() {
   }
 
   const bool new_config_valid = IsConfigValid(config);
-  config_store_.Save(config);
+  if (!config_store_.Save(config)) { server_.send(500, "text/plain", "配置写入失败，请检查存储空间"); return; }
 
   if (shared_state_.mutex != nullptr && xSemaphoreTake(shared_state_.mutex, portMAX_DELAY) == pdTRUE) {
     shared_state_.config = config;

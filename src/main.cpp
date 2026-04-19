@@ -5,7 +5,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
-#include "board_pins.h"
+#include "board_config.h"
 #include "config_store.h"
 #include "modem.h"
 #include "notifier.h"

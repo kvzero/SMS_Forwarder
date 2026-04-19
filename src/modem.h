@@ -8,8 +8,23 @@
 #include <Arduino.h>
 #include <pdulib.h>
 
-#include "board_pins.h"
+#include "board_config.h"
 #include "sms_inbox.h"
+
+/** @brief Result of checking whether one outbound SMS fits the send policy. */
+enum class OutboundSmsPolicyStatus : uint8_t {
+  CanSend = 0,
+  TooManyParts,
+  EncodeFailed,
+};
+
+/**
+ * @brief Checks whether an outbound SMS fits the shared modem send policy.
+ * @param phone_number Destination phone number used for PDU sizing.
+ * @param message SMS body text to analyze.
+ * @return Shared transport-side verdict.
+ */
+OutboundSmsPolicyStatus AnalyzeOutboundSms(const char* phone_number, const String& message);
 
 /**
  * @brief Owns the modem serial session, AT command flow, and SMS receive state.
@@ -66,7 +81,7 @@ class Modem {
     bool truncatedByPartLimit;
     bool droppedPartLogged;
     unsigned long firstPartTime;
-    SmsPart parts[kMaxConcatParts];
+    SmsPart parts[kMaxInboundSmsParts];
   };
 
   enum class UrcState {

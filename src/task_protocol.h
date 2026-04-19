@@ -11,16 +11,14 @@
 
 #include <cstring>
 
-#include "board_pins.h"
+#include "board_config.h"
 #include "config_store.h"
 
 constexpr size_t kTaskPhoneCapacity = 32;
 constexpr size_t kTaskTimestampCapacity = 48;
 constexpr size_t kTaskCommandCapacity = 128;
-constexpr size_t kTaskOutgoingTextCapacity = 640;
-constexpr size_t kSmsConcatPartUtf8MaxBytes = 67 * 3;
-constexpr size_t kTaskIncomingTextCapacity =
-    static_cast<size_t>(kMaxConcatParts) * kSmsConcatPartUtf8MaxBytes + 1;
+constexpr size_t kTaskOutgoingTextCapacity = kMaxOutboundSmsUtf8Bytes + 1;
+constexpr size_t kTaskIncomingTextCapacity = kMaxInboundSmsUtf8Bytes + 1;
 constexpr size_t kTaskResultCapacity = 1024;
 
 /**

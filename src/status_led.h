@@ -7,7 +7,7 @@
 
 #include <Arduino.h>
 
-#include "board_pins.h"
+#include "board_config.h"
 
 /** @brief High-level LED states exposed by the runtime. */
 enum class StatusLedMode : uint8_t {

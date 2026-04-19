@@ -94,26 +94,29 @@ class ConfigStore {
    * @brief Saves configuration to NVS using the stable legacy key set.
    * @param config Source configuration instance.
    */
-  void Save(const AppConfig& config);
+  bool Save(const AppConfig& config);
 
   /**
    * @brief Inserts or promotes a Wi-Fi credential to the front of the pool.
    * @param config Configuration object to mutate in memory.
    * @param ssid Target SSID.
    * @param password Password associated with the SSID.
+   * @return True when the saved Wi-Fi pool changed.
    */
-  void UpsertWifiCredential(AppConfig& config, const String& ssid, const String& password);
+  bool UpsertWifiCredential(AppConfig& config, const String& ssid, const String& password);
 
   /**
    * @brief Removes one saved Wi-Fi credential by SSID.
    * @param config Configuration object to mutate in memory.
    * @param ssid Target SSID.
+   * @return True when a saved Wi-Fi entry was removed.
    */
-  void RemoveWifiCredential(AppConfig& config, const String& ssid);
+  bool RemoveWifiCredential(AppConfig& config, const String& ssid);
 
   /**
    * @brief Clears every saved Wi-Fi credential from the pool.
    * @param config Configuration object to mutate in memory.
+   * @return True when the saved Wi-Fi pool changed.
    */
-  void ClearWifiCredentials(AppConfig& config);
+  bool ClearWifiCredentials(AppConfig& config);
 };

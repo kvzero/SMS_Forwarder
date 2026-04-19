@@ -213,9 +213,8 @@ bool WifiRuntime::DeleteCredential(const String& raw_ssid, String& message) {
     return false;
   }
 
-  const uint8_t old_count = config.wifiCredentialCount;
-  config_store_.RemoveWifiCredential(config, ssid);
-  if (config.wifiCredentialCount == old_count) {
+  const bool credentials_changed = config_store_.RemoveWifiCredential(config, ssid);
+  if (!credentials_changed) {
     message = "未找到对应的已保存网络。";
     return false;
   }
@@ -256,8 +255,9 @@ bool WifiRuntime::ClearCredentials(String& message) {
     return false;
   }
 
-  config_store_.ClearWifiCredentials(config);
-  SaveConfigSnapshot(config);
+  if (config_store_.ClearWifiCredentials(config)) {
+    SaveConfigSnapshot(config);
+  }
   CancelConnectAttempt(true);
   EnterProvisioningPortal("已清空所有已保存网络。", millis(), kSavedRetryIntervalMs);
   message = "已清空所有已保存网络。";
@@ -279,7 +279,7 @@ bool WifiRuntime::LoadConfigSnapshot(AppConfig& config) const {
 }
 
 void WifiRuntime::SaveConfigSnapshot(const AppConfig& config) {
-  config_store_.Save(config);
+  if (!config_store_.Save(config)) return;
 
   if (shared_state_.mutex != nullptr &&
       xSemaphoreTake(shared_state_.mutex, portMAX_DELAY) == pdTRUE) {
@@ -495,9 +495,12 @@ void WifiRuntime::HandleConnectAttempt(unsigned long now) {
   if (status == WL_CONNECTED) {
     AppConfig config;
     if (LoadConfigSnapshot(config)) {
-      config_store_.UpsertWifiCredential(config, active_candidate_.ssid,
-                                         active_candidate_.password);
-      SaveConfigSnapshot(config);
+      const bool credentials_changed =
+          config_store_.UpsertWifiCredential(config, active_candidate_.ssid,
+                                             active_candidate_.password);
+      if (credentials_changed) {
+        SaveConfigSnapshot(config);
+      }
     }
 
     connect_in_progress_ = false;

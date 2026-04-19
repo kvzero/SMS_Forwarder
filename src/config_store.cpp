@@ -11,6 +11,34 @@ namespace {
 
 Preferences preferences;
 
+struct WifiCredentialPoolSnapshot {
+  WifiCredential items[kMaxWifiCredentials];
+  uint8_t count = 0;
+};
+
+void CaptureWifiCredentialPool(const AppConfig& config, WifiCredentialPoolSnapshot& snapshot) {
+  snapshot.count = config.wifiCredentialCount;
+  for (int i = 0; i < kMaxWifiCredentials; ++i) {
+    snapshot.items[i] = config.wifiCredentials[i];
+  }
+}
+
+bool WifiCredentialPoolMatches(const AppConfig& config,
+                               const WifiCredentialPoolSnapshot& snapshot) {
+  if (config.wifiCredentialCount != snapshot.count) {
+    return false;
+  }
+
+  for (int i = 0; i < kMaxWifiCredentials; ++i) {
+    if (config.wifiCredentials[i].ssid != snapshot.items[i].ssid ||
+        config.wifiCredentials[i].password != snapshot.items[i].password) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 void NormalizeWifiCredentialPool(AppConfig& config) {
   WifiCredential normalized[kMaxWifiCredentials];
   uint8_t normalized_count = 0;
@@ -95,49 +123,57 @@ bool IsConfigValid(const AppConfig& config) {
 }
 
 // Persistence.
-void ConfigStore::Save(const AppConfig& config) {
+bool ConfigStore::Save(const AppConfig& config) {
   // Preserve existing NVS key names so saved settings survive refactors.
-  preferences.begin("sms_config", false);
-  preferences.putString("smtpServer", config.smtpServer);
-  preferences.putInt("smtpPort", config.smtpPort);
-  preferences.putString("smtpUser", config.smtpUser);
-  preferences.putString("smtpPass", config.smtpPass);
-  preferences.putString("smtpSendTo", config.smtpSendTo);
-  preferences.putString("adminPhone", config.adminPhone);
-  preferences.putString("webUser", config.webUser);
-  preferences.putString("webPass", config.webPass);
-  preferences.putString("numBlkList", config.numberBlackList);
-  preferences.putUChar("wifiCount", config.wifiCredentialCount);
+  if (!preferences.begin("sms_config", false)) return false;
+  bool ok = true;
+  ok &= preferences.putString("smtpServer", config.smtpServer) == config.smtpServer.length();
+  ok &= preferences.putInt("smtpPort", config.smtpPort) == 4;
+  ok &= preferences.putString("smtpUser", config.smtpUser) == config.smtpUser.length();
+  ok &= preferences.putString("smtpPass", config.smtpPass) == config.smtpPass.length();
+  ok &= preferences.putString("smtpSendTo", config.smtpSendTo) == config.smtpSendTo.length();
+  ok &= preferences.putString("adminPhone", config.adminPhone) == config.adminPhone.length();
+  ok &= preferences.putString("webUser", config.webUser) == config.webUser.length();
+  ok &= preferences.putString("webPass", config.webPass) == config.webPass.length();
+  ok &= preferences.putString("numBlkList", config.numberBlackList) == config.numberBlackList.length();
+  ok &= preferences.putUChar("wifiCount", config.wifiCredentialCount) == 1;
 
   for (int i = 0; i < kMaxPushChannels; ++i) {
     const String prefix = "push" + String(i);
-    preferences.putBool((prefix + "en").c_str(), config.pushChannels[i].enabled);
-    preferences.putUChar((prefix + "type").c_str(),
-                         static_cast<uint8_t>(config.pushChannels[i].type));
-    preferences.putString((prefix + "url").c_str(), config.pushChannels[i].url);
-    preferences.putString((prefix + "name").c_str(), config.pushChannels[i].name);
-    preferences.putString((prefix + "k1").c_str(), config.pushChannels[i].key1);
-    preferences.putString((prefix + "k2").c_str(), config.pushChannels[i].key2);
-    preferences.putString((prefix + "body").c_str(), config.pushChannels[i].customBody);
+    ok &= preferences.putBool((prefix + "en").c_str(), config.pushChannels[i].enabled) == 1;
+    ok &= preferences.putUChar((prefix + "type").c_str(),
+                               static_cast<uint8_t>(config.pushChannels[i].type)) == 1;
+    ok &= preferences.putString((prefix + "url").c_str(), config.pushChannels[i].url) == config.pushChannels[i].url.length();
+    ok &= preferences.putString((prefix + "name").c_str(), config.pushChannels[i].name) == config.pushChannels[i].name.length();
+    ok &= preferences.putString((prefix + "k1").c_str(), config.pushChannels[i].key1) == config.pushChannels[i].key1.length();
+    ok &= preferences.putString((prefix + "k2").c_str(), config.pushChannels[i].key2) == config.pushChannels[i].key2.length();
+    ok &= preferences.putString((prefix + "body").c_str(), config.pushChannels[i].customBody) == config.pushChannels[i].customBody.length();
   }
 
   for (int i = 0; i < kMaxWifiCredentials; ++i) {
     const String prefix = "wifi" + String(i);
     if (i < config.wifiCredentialCount) {
-      preferences.putString((prefix + "Ssid").c_str(), config.wifiCredentials[i].ssid);
-      preferences.putString((prefix + "Pass").c_str(), config.wifiCredentials[i].password);
+      ok &= preferences.putString((prefix + "Ssid").c_str(), config.wifiCredentials[i].ssid) == config.wifiCredentials[i].ssid.length();
+      ok &= preferences.putString((prefix + "Pass").c_str(), config.wifiCredentials[i].password) == config.wifiCredentials[i].password.length();
     } else {
-      preferences.putString((prefix + "Ssid").c_str(), "");
-      preferences.putString((prefix + "Pass").c_str(), "");
+      ok &= preferences.putString((prefix + "Ssid").c_str(), "") == 0;
+      ok &= preferences.putString((prefix + "Pass").c_str(), "") == 0;
     }
   }
 
   preferences.end();
-  Serial.println("Config saved");
+  if (ok) Serial.println("Config saved"); return ok;
 }
 
 void ConfigStore::Load(AppConfig& config) {
-  preferences.begin("sms_config", true);
+  if (!preferences.begin("sms_config", false)) {
+    Serial.println("Failed to open NVS config namespace; using defaults");
+    config = AppConfig{};
+    config.smtpPort = 465;
+    config.webUser = DEFAULT_WEB_USER;
+    config.webPass = DEFAULT_WEB_PASS;
+    return;
+  }
   config.smtpServer = preferences.getString("smtpServer", "");
   config.smtpPort = preferences.getInt("smtpPort", 465);
   config.smtpUser = preferences.getString("smtpUser", "");
@@ -169,27 +205,18 @@ void ConfigStore::Load(AppConfig& config) {
   }
   NormalizeWifiCredentialPool(config);
 
-  // Migrate the legacy single HTTP target into push channel 1 on first load.
-  const String old_http_url = preferences.getString("httpUrl", "");
-  if (old_http_url.length() > 0 && !config.pushChannels[0].enabled) {
-    config.pushChannels[0].enabled = true;
-    config.pushChannels[0].url = old_http_url;
-    config.pushChannels[0].type = preferences.getUChar("barkMode", 0) != 0
-                                      ? PUSH_TYPE_BARK
-                                      : PUSH_TYPE_POST_JSON;
-    config.pushChannels[0].name = "迁移通道";
-    Serial.println("Migrated legacy HTTP config to push channel 1");
-  }
-
   preferences.end();
   Serial.println("Config loaded");
 }
 
-void ConfigStore::UpsertWifiCredential(AppConfig& config, const String& ssid,
+bool ConfigStore::UpsertWifiCredential(AppConfig& config, const String& ssid,
                                        const String& password) {
   if (ssid.length() == 0) {
-    return;
+    return false;
   }
+
+  WifiCredentialPoolSnapshot previous;
+  CaptureWifiCredentialPool(config, previous);
 
   WifiCredential updated[kMaxWifiCredentials];
   uint8_t updated_count = 0;
@@ -217,12 +244,17 @@ void ConfigStore::UpsertWifiCredential(AppConfig& config, const String& ssid,
       config.wifiCredentials[i].password = "";
     }
   }
+
+  return !WifiCredentialPoolMatches(config, previous);
 }
 
-void ConfigStore::RemoveWifiCredential(AppConfig& config, const String& ssid) {
+bool ConfigStore::RemoveWifiCredential(AppConfig& config, const String& ssid) {
   if (ssid.length() == 0 || config.wifiCredentialCount == 0) {
-    return;
+    return false;
   }
+
+  WifiCredentialPoolSnapshot previous;
+  CaptureWifiCredentialPool(config, previous);
 
   WifiCredential updated[kMaxWifiCredentials];
   uint8_t updated_count = 0;
@@ -246,12 +278,19 @@ void ConfigStore::RemoveWifiCredential(AppConfig& config, const String& ssid) {
       config.wifiCredentials[i].password = "";
     }
   }
+
+  return !WifiCredentialPoolMatches(config, previous);
 }
 
-void ConfigStore::ClearWifiCredentials(AppConfig& config) {
+bool ConfigStore::ClearWifiCredentials(AppConfig& config) {
+  WifiCredentialPoolSnapshot previous;
+  CaptureWifiCredentialPool(config, previous);
+
   config.wifiCredentialCount = 0;
   for (int i = 0; i < kMaxWifiCredentials; ++i) {
     config.wifiCredentials[i].ssid = "";
     config.wifiCredentials[i].password = "";
   }
+
+  return !WifiCredentialPoolMatches(config, previous);
 }

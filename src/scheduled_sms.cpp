@@ -9,6 +9,7 @@
 
 #include <algorithm>
 
+#include "modem.h"
 #include "scheduled_store.h"
 
 namespace {
@@ -386,8 +387,18 @@ bool ScheduledSms::ValidateDraftLocked(const ScheduledTaskDraft& draft,
     message = "请输入短信内容。";
     return false;
   }
-  if (draft.body.length() > kScheduledTaskBodyMaxBytes) {
+  if (draft.body.length() > kMaxOutboundSmsUtf8Bytes) {
     message = "短信内容超过当前支持上限。";
+    return false;
+  }
+  const OutboundSmsPolicyStatus sms_policy =
+      AnalyzeOutboundSms(draft.phone.c_str(), draft.body);
+  if (sms_policy == OutboundSmsPolicyStatus::TooManyParts) {
+    message = "短信内容超过 5 段发送上限。";
+    return false;
+  }
+  if (sms_policy != OutboundSmsPolicyStatus::CanSend) {
+    message = "短信内容无法按当前编码规则发送。";
     return false;
   }
   if (draft.first_run_utc <= 0) {

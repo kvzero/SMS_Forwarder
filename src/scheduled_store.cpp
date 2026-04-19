@@ -7,6 +7,7 @@
 
 #include <FS.h>
 #include <SPIFFS.h>
+#include <esp_partition.h>
 
 namespace {
 
@@ -24,6 +25,26 @@ String BuildTaskPath(const char* prefix, uint32_t task_id, const char* suffix) {
 
 bool HasTaskPrefix(const String& path, const char* prefix, const char* suffix) {
   return path.startsWith(prefix) && path.endsWith(suffix);
+}
+
+bool IsSpiffsPartitionBlank() {
+  const esp_partition_t* partition = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, nullptr);
+  if (partition == nullptr) {
+    return false;
+  }
+
+  uint8_t buffer[256];
+  if (esp_partition_read(partition, 0, buffer, sizeof(buffer)) != ESP_OK) {
+    return false;
+  }
+
+  for (uint8_t byte : buffer) {
+    if (byte != 0xFF) {
+      return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace
@@ -255,8 +276,20 @@ bool ScheduledStore::EnsureMounted(String& message) const {
     return true;
   }
 
-  message = "无法挂载定时任务存储空间。";
-  return false;
+  if (!IsSpiffsPartitionBlank()) {
+    message = "无法挂载定时任务存储空间。";
+    return false;
+  }
+
+  if (!SPIFFS.format() || !SPIFFS.begin(false)) {
+    message = "无法初始化定时任务存储空间。";
+    return false;
+  }
+
+  mounted_ = true;
+  Serial.println("Formatted blank SPIFFS partition for first boot");
+  return true;
+
 }
 
 bool ScheduledStore::LoadTaskMetadata(uint32_t task_id, ScheduledTaskRecord& task,

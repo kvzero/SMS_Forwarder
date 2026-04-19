@@ -13,7 +13,6 @@ class ScheduledStore;
 
 constexpr size_t kMaxScheduledTasks = 16;
 constexpr size_t kScheduledTaskPreviewMaxBytes = 96;
-constexpr size_t kScheduledTaskBodyMaxBytes = 12288;
 
 enum class ScheduledIntervalUnit : uint8_t {
   Minutes = 0,
