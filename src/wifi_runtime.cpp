@@ -818,7 +818,7 @@ void WifiRuntime::StoreScanResult(ScanCycleState& cycle, const String& ssid,
 }
 
 void WifiRuntime::StartNtpSync() {
-  configTime(0, 0, "ntp.ntsc.ac.cn", "ntp.aliyun.com", "pool.ntp.org");
+  configTzTime(kLocalTimezone, "ntp.ntsc.ac.cn", "ntp.aliyun.com", "pool.ntp.org");
   ntp_sync_in_progress_ = true;
   ntp_sync_completed_ = false;
   ntp_sync_started_ms_ = millis();

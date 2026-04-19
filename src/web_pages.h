@@ -406,133 +406,6 @@ static const char kScheduledTaskListSectionHtml[] = R"rawliteral(
     </div>
 )rawliteral";
 
-static const char kScheduledToolsScript[] = R"rawliteral(
-    function toDatetimeLocalValue(epoch) {
-      if (!epoch || epoch <= 0) return '';
-      var date = new Date(epoch * 1000);
-      var pad = function(value) { return String(value).padStart(2, '0'); };
-      return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' +
-        pad(date.getHours()) + ':' + pad(date.getMinutes());
-    }
-
-    function updateScheduledCount(el) {
-      document.getElementById('scheduledCharCount').textContent = el.value.length;
-    }
-
-    function initScheduledToast() {
-      var toast = document.getElementById('scheduledToast');
-      if (!toast) return;
-      setTimeout(function() {
-        toast.classList.add('scheduled-toast-hide');
-      }, 2600);
-      setTimeout(function() {
-        if (toast && toast.parentNode) {
-          toast.parentNode.removeChild(toast);
-        }
-      }, 3200);
-    }
-
-    function formatScheduledClock(epochSeconds, clockValid) {
-      if (!epochSeconds || epochSeconds <= 0) {
-        return '当前设备时间：未同步';
-      }
-      var date = new Date(epochSeconds * 1000);
-      var pad = function(value) { return String(value).padStart(2, '0'); };
-      var label = date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' +
-        pad(date.getHours()) + ':' + pad(date.getMinutes());
-      return clockValid ? ('当前设备时间：' + label) : '当前设备时间：未同步';
-    }
-
-    function startScheduledClock() {
-      var hint = document.getElementById('scheduledClockHint');
-      if (!hint) return;
-
-      var baseEpoch = parseInt(hint.dataset.epoch || '0', 10);
-      var clockValid = hint.dataset.valid === '1';
-      var baseMs = Date.now();
-
-      function renderClock() {
-        var currentEpoch = baseEpoch + Math.floor((Date.now() - baseMs) / 1000);
-        hint.textContent = formatScheduledClock(currentEpoch, clockValid);
-      }
-
-      renderClock();
-      setInterval(renderClock, 10000);
-    }
-
-    function setFirstRunMode(mode) {
-      document.getElementById('scheduledFirstRunMode').value = mode;
-      document.getElementById('scheduledAtGroup').style.display = mode === 'at' ? 'block' : 'none';
-      document.getElementById('scheduledDelayGroup').style.display = mode === 'delay' ? 'block' : 'none';
-      document.getElementById('firstRunAtBtn').classList.toggle('btn-secondary', mode !== 'at');
-      document.getElementById('firstRunDelayBtn').classList.toggle('btn-secondary', mode !== 'delay');
-    }
-
-    function toggleRepeatSettings() {
-      document.getElementById('scheduledRepeatGroup').style.display =
-        document.getElementById('scheduledRepeatEnabled').checked ? 'block' : 'none';
-    }
-
-    function toggleEndPolicy() {
-      var mode = document.getElementById('scheduledEndPolicy').value;
-      document.getElementById('scheduledEndAtGroup').style.display = mode === 'date' ? 'block' : 'none';
-      document.getElementById('scheduledMaxRunsGroup').style.display = mode === 'count' ? 'block' : 'none';
-    }
-
-    function prepareScheduledForm() {
-      var firstRunMode = document.getElementById('scheduledFirstRunMode').value;
-      var firstRunEpoch = 0;
-      if (firstRunMode === 'at') {
-        var firstRunAt = document.getElementById('scheduledFirstRunAt').value;
-        if (!firstRunAt) {
-          alert('请选择首次发送时间。');
-          return false;
-        }
-        firstRunEpoch = Math.floor(new Date(firstRunAt).getTime() / 1000);
-      } else {
-        var delayValue = parseInt(document.getElementById('scheduledDelayValue').value, 10);
-        var delayUnit = document.getElementById('scheduledDelayUnit').value;
-        if (!delayValue || delayValue <= 0) {
-          alert('请输入有效的延后数值。');
-          return false;
-        }
-        var delaySeconds = delayValue * 60;
-        if (delayUnit === 'hours') delaySeconds = delayValue * 3600;
-        if (delayUnit === 'days') delaySeconds = delayValue * 86400;
-        if (delayUnit === 'weeks') delaySeconds = delayValue * 604800;
-        if (delayUnit === 'months') delaySeconds = delayValue * 2629800;
-        firstRunEpoch = Math.floor(Date.now() / 1000) + delaySeconds;
-      }
-      document.getElementById('scheduledFirstRunEpoch').value = String(firstRunEpoch);
-
-      if (document.getElementById('scheduledEndPolicy').value === 'date') {
-        var endAt = document.getElementById('scheduledEndAt').value;
-        if (!endAt) {
-          alert('请选择结束时间。');
-          return false;
-        }
-        document.getElementById('scheduledEndAtEpoch').value =
-          String(Math.floor(new Date(endAt).getTime() / 1000));
-      } else {
-        document.getElementById('scheduledEndAtEpoch').value = '0';
-      }
-      return true;
-    }
-
-    document.addEventListener('DOMContentLoaded', function() {
-      var body = document.getElementById('scheduledBody');
-      if (body) updateScheduledCount(body);
-      var firstRunAt = document.getElementById('scheduledFirstRunAt');
-      if (firstRunAt) firstRunAt.value = toDatetimeLocalValue(parseInt(firstRunAt.dataset.epoch || '0', 10));
-      var endAt = document.getElementById('scheduledEndAt');
-      if (endAt) endAt.value = toDatetimeLocalValue(parseInt(endAt.dataset.epoch || '0', 10));
-      setFirstRunMode('at');
-      toggleRepeatSettings();
-      toggleEndPolicy();
-      startScheduledClock();
-      initScheduledToast();
-    });
-)rawliteral";
 
 static const char kToolsPageHtml[] = R"rawliteral(
 <!DOCTYPE html>
@@ -979,7 +852,131 @@ static const char kToolsPageHtml[] = R"rawliteral(
       document.getElementById('sendScheduledTab').classList.toggle('btn-secondary', nowActive);
     }
 
-    %SCHEDULED_SCRIPT%
+    function toDatetimeLocalValue(epoch) {
+      if (!epoch || epoch <= 0) return '';
+      var date = new Date(epoch * 1000);
+      var pad = function(value) { return String(value).padStart(2, '0'); };
+      return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' +
+        pad(date.getHours()) + ':' + pad(date.getMinutes());
+    }
+
+    function updateScheduledCount(el) {
+      document.getElementById('scheduledCharCount').textContent = el.value.length;
+    }
+
+    function initScheduledToast() {
+      var toast = document.getElementById('scheduledToast');
+      if (!toast) return;
+      setTimeout(function() {
+        toast.classList.add('scheduled-toast-hide');
+      }, 2600);
+      setTimeout(function() {
+        if (toast && toast.parentNode) {
+          toast.parentNode.removeChild(toast);
+        }
+      }, 3200);
+    }
+
+    function formatScheduledClock(epochSeconds, clockValid) {
+      if (!epochSeconds || epochSeconds <= 0) {
+        return '当前设备时间：未同步';
+      }
+      var date = new Date(epochSeconds * 1000);
+      var pad = function(value) { return String(value).padStart(2, '0'); };
+      var label = date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' +
+        pad(date.getHours()) + ':' + pad(date.getMinutes());
+      return clockValid ? ('当前设备时间：' + label) : '当前设备时间：未同步';
+    }
+
+    function startScheduledClock() {
+      var hint = document.getElementById('scheduledClockHint');
+      if (!hint) return;
+
+      var baseEpoch = parseInt(hint.dataset.epoch || '0', 10);
+      var clockValid = hint.dataset.valid === '1';
+      var baseMs = Date.now();
+
+      function renderClock() {
+        var currentEpoch = baseEpoch + Math.floor((Date.now() - baseMs) / 1000);
+        hint.textContent = formatScheduledClock(currentEpoch, clockValid);
+      }
+
+      renderClock();
+      setInterval(renderClock, 10000);
+    }
+
+    function setFirstRunMode(mode) {
+      document.getElementById('scheduledFirstRunMode').value = mode;
+      document.getElementById('scheduledAtGroup').style.display = mode === 'at' ? 'block' : 'none';
+      document.getElementById('scheduledDelayGroup').style.display = mode === 'delay' ? 'block' : 'none';
+      document.getElementById('firstRunAtBtn').classList.toggle('btn-secondary', mode !== 'at');
+      document.getElementById('firstRunDelayBtn').classList.toggle('btn-secondary', mode !== 'delay');
+    }
+
+    function toggleRepeatSettings() {
+      document.getElementById('scheduledRepeatGroup').style.display =
+        document.getElementById('scheduledRepeatEnabled').checked ? 'block' : 'none';
+    }
+
+    function toggleEndPolicy() {
+      var mode = document.getElementById('scheduledEndPolicy').value;
+      document.getElementById('scheduledEndAtGroup').style.display = mode === 'date' ? 'block' : 'none';
+      document.getElementById('scheduledMaxRunsGroup').style.display = mode === 'count' ? 'block' : 'none';
+    }
+
+    function prepareScheduledForm() {
+      var firstRunMode = document.getElementById('scheduledFirstRunMode').value;
+      var firstRunEpoch = 0;
+      if (firstRunMode === 'at') {
+        var firstRunAt = document.getElementById('scheduledFirstRunAt').value;
+        if (!firstRunAt) {
+          alert('请选择首次发送时间。');
+          return false;
+        }
+        firstRunEpoch = Math.floor(new Date(firstRunAt).getTime() / 1000);
+      } else {
+        var delayValue = parseInt(document.getElementById('scheduledDelayValue').value, 10);
+        var delayUnit = document.getElementById('scheduledDelayUnit').value;
+        if (!delayValue || delayValue <= 0) {
+          alert('请输入有效的延后数值。');
+          return false;
+        }
+        var delaySeconds = delayValue * 60;
+        if (delayUnit === 'hours') delaySeconds = delayValue * 3600;
+        if (delayUnit === 'days') delaySeconds = delayValue * 86400;
+        if (delayUnit === 'weeks') delaySeconds = delayValue * 604800;
+        if (delayUnit === 'months') delaySeconds = delayValue * 2629800;
+        firstRunEpoch = Math.floor(Date.now() / 1000) + delaySeconds;
+      }
+      document.getElementById('scheduledFirstRunEpoch').value = String(firstRunEpoch);
+
+      if (document.getElementById('scheduledEndPolicy').value === 'date') {
+        var endAt = document.getElementById('scheduledEndAt').value;
+        if (!endAt) {
+          alert('请选择结束时间。');
+          return false;
+        }
+        document.getElementById('scheduledEndAtEpoch').value =
+          String(Math.floor(new Date(endAt).getTime() / 1000));
+      } else {
+        document.getElementById('scheduledEndAtEpoch').value = '0';
+      }
+      return true;
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      var body = document.getElementById('scheduledBody');
+      if (body) updateScheduledCount(body);
+      var firstRunAt = document.getElementById('scheduledFirstRunAt');
+      if (firstRunAt) firstRunAt.value = toDatetimeLocalValue(parseInt(firstRunAt.dataset.epoch || '0', 10));
+      var endAt = document.getElementById('scheduledEndAt');
+      if (endAt) endAt.value = toDatetimeLocalValue(parseInt(endAt.dataset.epoch || '0', 10));
+      setFirstRunMode('at');
+      toggleRepeatSettings();
+      toggleEndPolicy();
+      startScheduledClock();
+      initScheduledToast();
+    });
     
     function queryInfo(type) {
       var result = document.getElementById('queryResult');

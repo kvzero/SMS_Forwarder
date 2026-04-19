@@ -5,6 +5,7 @@
 
 #include "web_admin.h"
 
+#include <cstring>
 #include <WiFi.h>
 
 #include "wifi_pages.h"
@@ -15,6 +16,43 @@ namespace {
 constexpr TickType_t kWebSyncPollSlice = pdMS_TO_TICKS(50);
 constexpr unsigned long kPendingRequestLifetimeMs = 60000;
 constexpr TickType_t kSendSmsWaitTicks = pdMS_TO_TICKS(40000);
+constexpr const char* kScheduledSectionToken = "%SCHEDULED_SECTION%";
+constexpr const char* kScheduledTasksSectionToken = "%SCHEDULED_TASKS_SECTION%";
+
+bool BuildToolsHtmlWithScheduledBlocks(const String& scheduled_section,
+                                       const String& scheduled_tasks_section,
+                                       String& html) {
+  const char* template_html = kToolsPageHtml;
+  const char* section_pos = strstr(template_html, kScheduledSectionToken);
+  if (section_pos == nullptr) {
+    return false;
+  }
+  const char* section_tail = section_pos + strlen(kScheduledSectionToken);
+  const char* tasks_pos = strstr(section_tail, kScheduledTasksSectionToken);
+  if (tasks_pos == nullptr) {
+    return false;
+  }
+
+  const size_t prefix_length = static_cast<size_t>(section_pos - template_html);
+  const size_t middle_length = static_cast<size_t>(tasks_pos - section_tail);
+  const char* suffix = tasks_pos + strlen(kScheduledTasksSectionToken);
+  const size_t suffix_length = strlen(suffix);
+
+  const size_t final_length =
+      prefix_length + scheduled_section.length() + middle_length +
+      scheduled_tasks_section.length() + suffix_length;
+  html = "";
+  if (!html.reserve(final_length + 32)) {
+    return false;
+  }
+
+  html.concat(template_html, static_cast<unsigned int>(prefix_length));
+  html += scheduled_section;
+  html.concat(section_tail, static_cast<unsigned int>(middle_length));
+  html += scheduled_tasks_section;
+  html += suffix;
+  return true;
+}
 
 String EscapeHtml(const String& value) {
   String escaped = value;
@@ -680,7 +718,17 @@ void WebAdmin::SendToolsPage(const ScheduledTaskDraft* draft,
   BuildScheduledToolsPageState(server_, scheduled_sms_, draft, scheduled_message,
                                scheduled_success, state);
 
-  String html = String(kToolsPageHtml);
+  const String scheduled_section = RenderScheduledToolsSection(state);
+  const String scheduled_tasks_section = RenderScheduledTaskListSection(state);
+
+  String html;
+  if (!BuildToolsHtmlWithScheduledBlocks(scheduled_section, scheduled_tasks_section,
+                                         html)) {
+    html = String(kToolsPageHtml);
+    html.replace(kScheduledSectionToken, scheduled_section);
+    html.replace(kScheduledTasksSectionToken, scheduled_tasks_section);
+  }
+
   String tools_clock_hint = "当前设备时间：未同步";
   if (state.clock_valid) {
     tools_clock_hint = "当前设备时间：" + FormatTimeLabel(state.now_utc);
@@ -700,9 +748,6 @@ void WebAdmin::SendToolsPage(const ScheduledTaskDraft* draft,
     message_toast += "</div>";
   }
   html.replace("%SCHEDULED_MESSAGE_TOAST%", message_toast);
-  html.replace("%SCHEDULED_SECTION%", RenderScheduledToolsSection(state));
-  html.replace("%SCHEDULED_TASKS_SECTION%", RenderScheduledTaskListSection(state));
-  html.replace("%SCHEDULED_SCRIPT%", kScheduledToolsScript);
   html.replace("%TOOLS_INITIAL_MODE%", state.scheduled_mode ? "scheduled" : "now");
   server_.send(200, "text/html", html);
 }
