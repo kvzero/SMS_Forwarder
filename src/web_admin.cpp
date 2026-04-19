@@ -16,6 +16,7 @@ namespace {
 constexpr TickType_t kWebSyncPollSlice = pdMS_TO_TICKS(50);
 constexpr unsigned long kPendingRequestLifetimeMs = 60000;
 constexpr TickType_t kSendSmsWaitTicks = pdMS_TO_TICKS(40000);
+constexpr size_t kToolsTemplateReplaceHeadroom = 512;
 constexpr const char* kScheduledSectionToken = "%SCHEDULED_SECTION%";
 constexpr const char* kScheduledTasksSectionToken = "%SCHEDULED_TASKS_SECTION%";
 
@@ -42,7 +43,7 @@ bool BuildToolsHtmlWithScheduledBlocks(const String& scheduled_section,
       prefix_length + scheduled_section.length() + middle_length +
       scheduled_tasks_section.length() + suffix_length;
   html = "";
-  if (!html.reserve(final_length + 32)) {
+  if (!html.reserve(final_length + kToolsTemplateReplaceHeadroom)) {
     return false;
   }
 

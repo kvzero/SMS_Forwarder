@@ -134,6 +134,7 @@ static const char kProvisionPageHtml[] = R"rawliteral(
       border-radius: 14px;
       background: rgba(255, 255, 255, 0.48);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+      width: 100%; box-sizing: border-box; min-width: 0;
     }
     .network-meta,
     .credential-meta {

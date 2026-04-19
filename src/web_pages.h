@@ -924,6 +924,16 @@ static const char kToolsPageHtml[] = R"rawliteral(
       document.getElementById('scheduledMaxRunsGroup').style.display = mode === 'count' ? 'block' : 'none';
     }
 
+    function addCalendarMonths(baseDate, monthsToAdd) {
+      var target = new Date(baseDate.getTime());
+      var originalDay = target.getDate();
+      target.setDate(1);
+      target.setMonth(target.getMonth() + monthsToAdd);
+      var monthLastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+      target.setDate(Math.min(originalDay, monthLastDay));
+      return target;
+    }
+
     function prepareScheduledForm() {
       var firstRunMode = document.getElementById('scheduledFirstRunMode').value;
       var firstRunEpoch = 0;
@@ -941,12 +951,16 @@ static const char kToolsPageHtml[] = R"rawliteral(
           alert('请输入有效的延后数值。');
           return false;
         }
-        var delaySeconds = delayValue * 60;
-        if (delayUnit === 'hours') delaySeconds = delayValue * 3600;
-        if (delayUnit === 'days') delaySeconds = delayValue * 86400;
-        if (delayUnit === 'weeks') delaySeconds = delayValue * 604800;
-        if (delayUnit === 'months') delaySeconds = delayValue * 2629800;
-        firstRunEpoch = Math.floor(Date.now() / 1000) + delaySeconds;
+        if (delayUnit === 'months') {
+          var delayed = addCalendarMonths(new Date(), delayValue);
+          firstRunEpoch = Math.floor(delayed.getTime() / 1000);
+        } else {
+          var delaySeconds = delayValue * 60;
+          if (delayUnit === 'hours') delaySeconds = delayValue * 3600;
+          if (delayUnit === 'days') delaySeconds = delayValue * 86400;
+          if (delayUnit === 'weeks') delaySeconds = delayValue * 604800;
+          firstRunEpoch = Math.floor(Date.now() / 1000) + delaySeconds;
+        }
       }
       document.getElementById('scheduledFirstRunEpoch').value = String(firstRunEpoch);
 

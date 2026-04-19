@@ -20,14 +20,33 @@ bool IsClockValid(time_t now_utc) {
   return now_utc >= kClockValidThreshold;
 }
 
-time_t AddMonthsUtc(time_t base_utc, uint32_t months) {
+bool IsLeapYear(int year) {
+  return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+int DaysInMonth(int year, int month_index) {
+  static const int kMonthDays[] = {31, 28, 31, 30, 31, 30,
+                                   31, 31, 30, 31, 30, 31};
+  if (month_index == 1 && IsLeapYear(year)) {
+    return 29;
+  }
+  return kMonthDays[month_index];
+}
+
+time_t AddMonthsLocalCalendar(time_t base_utc, uint32_t months) {
   struct tm time_parts;
 #if defined(_WIN32)
-  gmtime_s(&time_parts, &base_utc);
+  localtime_s(&time_parts, &base_utc);
 #else
-  gmtime_r(&base_utc, &time_parts);
+  localtime_r(&base_utc, &time_parts);
 #endif
+  const int original_day = time_parts.tm_mday;
+  time_parts.tm_mday = 1;
   time_parts.tm_mon += static_cast<int>(months);
+  mktime(&time_parts);
+  const int month_last_day =
+      DaysInMonth(time_parts.tm_year + 1900, time_parts.tm_mon);
+  time_parts.tm_mday = std::min(original_day, month_last_day);
   return mktime(&time_parts);
 }
 
@@ -46,7 +65,7 @@ time_t AddIntervalUtc(time_t base_utc, uint32_t every, ScheduledIntervalUnit uni
     case ScheduledIntervalUnit::Weeks:
       return base_utc + static_cast<time_t>(every) * 60 * 60 * 24 * 7;
     case ScheduledIntervalUnit::Months:
-      return AddMonthsUtc(base_utc, every);
+      return AddMonthsLocalCalendar(base_utc, every);
   }
 
   return base_utc;
