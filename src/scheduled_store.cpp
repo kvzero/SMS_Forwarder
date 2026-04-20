@@ -80,7 +80,7 @@ bool ScheduledStore::Load(ScheduledTaskRecord* tasks, size_t capacity, size_t& t
   uint32_t max_id = 0;
   File file = root.openNextFile();
   while (file) {
-    const String path = String(file.name());
+    const String path = String(file.path());
     file.close();
 
     if (HasTaskPrefix(path, kMetadataPrefix, kMetadataSuffix)) {
