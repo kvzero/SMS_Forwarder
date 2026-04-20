@@ -16,9 +16,37 @@ namespace {
 constexpr TickType_t kWebSyncPollSlice = pdMS_TO_TICKS(50);
 constexpr unsigned long kPendingRequestLifetimeMs = 60000;
 constexpr TickType_t kSendSmsWaitTicks = pdMS_TO_TICKS(40000);
+constexpr size_t kConfigTemplateReplaceHeadroom = 2048;
 constexpr size_t kToolsTemplateReplaceHeadroom = 512;
+constexpr const char* kPageToastToken = "%PAGE_TOAST%";
+constexpr const char* kPushChannelsToken = "%PUSH_CHANNELS%";
 constexpr const char* kScheduledSectionToken = "%SCHEDULED_SECTION%";
 constexpr const char* kScheduledTasksSectionToken = "%SCHEDULED_TASKS_SECTION%";
+
+bool BuildConfigHtmlWithPushChannels(const String& push_channels_html,
+                                     String& html) {
+  const char* template_html = kConfigPageHtml;
+  const char* channels_pos = strstr(template_html, kPushChannelsToken);
+  if (channels_pos == nullptr) {
+    return false;
+  }
+
+  const size_t prefix_length = static_cast<size_t>(channels_pos - template_html);
+  const char* suffix = channels_pos + strlen(kPushChannelsToken);
+  const size_t suffix_length = strlen(suffix);
+  const size_t final_length =
+      prefix_length + push_channels_html.length() + suffix_length;
+
+  html = "";
+  if (!html.reserve(final_length + kConfigTemplateReplaceHeadroom)) {
+    return false;
+  }
+
+  html.concat(template_html, static_cast<unsigned int>(prefix_length));
+  html += push_channels_html;
+  html += suffix;
+  return true;
+}
 
 bool BuildToolsHtmlWithScheduledBlocks(const String& scheduled_section,
                                        const String& scheduled_tasks_section,
@@ -63,6 +91,23 @@ String EscapeHtml(const String& value) {
   escaped.replace("\"", "&quot;");
   escaped.replace("'", "&#39;");
   return escaped;
+}
+
+String BuildPageToastHtml(const String& message, bool success) {
+  if (message.length() == 0) {
+    return "";
+  }
+
+  String page_toast_html = "<div id=\"pageToast\" class=\"page-toast ";
+  page_toast_html += success ? "page-toast-success" : "page-toast-error";
+  page_toast_html += "\" role=\"status\" aria-live=\"polite\">";
+  page_toast_html += EscapeHtml(message);
+  page_toast_html += "</div>";
+  return page_toast_html;
+}
+
+void ApplyPageToast(String& html, const String& message, bool success) {
+  html.replace(kPageToastToken, BuildPageToastHtml(message, success));
 }
 
 const char* CheckedAttr(bool value) {
@@ -152,8 +197,9 @@ struct ScheduledToolsPageState {
 
 void BuildScheduledToolsPageState(WebServer& server, ScheduledSms& scheduled_sms,
                                   const ScheduledTaskDraft* draft,
-                                  const String& scheduled_message,
-                                  bool scheduled_success,
+                                  const String& page_message,
+                                  bool page_message_success,
+                                  bool open_scheduled_mode,
                                   ScheduledToolsPageState& state) {
   if (draft != nullptr) {
     state.draft = *draft;
@@ -171,13 +217,13 @@ void BuildScheduledToolsPageState(WebServer& server, ScheduledSms& scheduled_sms
     state.draft.repeat_unit = ScheduledIntervalUnit::Days;
   }
 
-  state.scheduled_mode = state.editing || scheduled_message.length() > 0 ||
+  state.scheduled_mode = state.editing || open_scheduled_mode ||
                          server.arg("mode") == "scheduled";
   state.task_count = scheduled_sms.CopyTasks(state.tasks, kMaxScheduledTasks);
   state.now_utc = time(nullptr);
   state.clock_valid = state.now_utc >= 100000;
-  state.message = scheduled_message;
-  state.message_success = scheduled_success;
+  state.message = page_message;
+  state.message_success = page_message_success;
 }
 
 String BuildScheduledTaskListHtml(const ScheduledTaskRecord* tasks, size_t task_count) {
@@ -616,34 +662,15 @@ void WebAdmin::HandleRoot() {
 
 void WebAdmin::HandleAdminPage() {
   if (!CheckAuth()) return;
+  SendAdminPage("", false);
+}
 
+void WebAdmin::SendAdminPage(const String& page_message, bool page_message_success) {
   AppConfig config;
   if (!LoadConfigSnapshot(config, nullptr)) {
     server_.send(500, "text/plain", "配置忙，请稍后重试");
     return;
   }
-
-  String html = String(kConfigPageHtml);
-  const time_t now_utc = time(nullptr);
-  String config_clock_hint = "当前设备时间：未同步";
-  if (now_utc >= 100000) {
-    config_clock_hint = "当前设备时间：" + FormatTimeLabel(now_utc);
-  }
-  html.replace("%IP%", wifi_runtime_.GetPrimaryIpString());
-  html.replace("%CONFIG_CLOCK_HINT%",
-               "<span id=\"configClockHint\" data-epoch=\"" +
-                   String(static_cast<long long>(now_utc)) +
-                   "\" data-valid=\"" + String(now_utc >= 100000 ? "1" : "0") +
-                   "\">" + EscapeHtml(config_clock_hint) + "</span>");
-  html.replace("%WEB_USER%", config.webUser);
-  html.replace("%WEB_PASS%", config.webPass);
-  html.replace("%SMTP_SERVER%", config.smtpServer);
-  html.replace("%SMTP_PORT%", String(config.smtpPort));
-  html.replace("%SMTP_USER%", config.smtpUser);
-  html.replace("%SMTP_PASS%", config.smtpPass);
-  html.replace("%SMTP_SEND_TO%", config.smtpSendTo);
-  html.replace("%ADMIN_PHONE%", config.adminPhone);
-  html.replace("%NUMBER_BLACK_LIST%", config.numberBlackList);
 
   String channels_html;
   // Render the push channel section from the persisted configuration so the UI
@@ -707,17 +734,60 @@ void WebAdmin::HandleAdminPage() {
 
     channels_html += "</div></div>";
   }
-  html.replace("%PUSH_CHANNELS%", channels_html);
+
+  String html;
+  if (!BuildConfigHtmlWithPushChannels(channels_html, html)) {
+    html = String(kConfigPageHtml);
+    html.replace(kPushChannelsToken, channels_html);
+  }
+
+  const time_t now_utc = time(nullptr);
+  String config_clock_hint = "当前设备时间：未同步";
+  if (now_utc >= 100000) {
+    config_clock_hint = "当前设备时间：" + FormatTimeLabel(now_utc);
+  }
+  html.replace("%IP%", wifi_runtime_.GetPrimaryIpString());
+  html.replace("%CONFIG_CLOCK_HINT%",
+               "<span id=\"configClockHint\" data-epoch=\"" +
+                   String(static_cast<long long>(now_utc)) +
+                   "\" data-valid=\"" + String(now_utc >= 100000 ? "1" : "0") +
+                   "\">" + EscapeHtml(config_clock_hint) + "</span>");
+  html.replace("%WEB_USER%", config.webUser);
+  html.replace("%WEB_PASS%", config.webPass);
+  html.replace("%SMTP_SERVER%", config.smtpServer);
+  html.replace("%SMTP_PORT%", String(config.smtpPort));
+  html.replace("%SMTP_USER%", config.smtpUser);
+  html.replace("%SMTP_PASS%", config.smtpPass);
+  html.replace("%SMTP_SEND_TO%", config.smtpSendTo);
+  html.replace("%ADMIN_PHONE%", config.adminPhone);
+  html.replace("%NUMBER_BLACK_LIST%", config.numberBlackList);
+  ApplyPageToast(html, page_message, page_message_success);
 
   server_.send(200, "text/html", html);
 }
 
-void WebAdmin::SendToolsPage(const ScheduledTaskDraft* draft,
-                             const String& scheduled_message,
-                             bool scheduled_success) {
+WebAdmin::PageToast WebAdmin::BuildPageToast(const String& message,
+                                             bool success) const {
+  PageToast toast;
+  toast.message = message;
+  if (message.length() == 0) {
+    toast.level = PageToastLevel::kNone;
+  } else {
+    toast.level =
+        success ? PageToastLevel::kSuccess : PageToastLevel::kError;
+  }
+  return toast;
+}
+
+void WebAdmin::SendToolsPage(const ToolsPageRequest& request) {
+  const bool page_message_success =
+      request.toast.level == PageToastLevel::kSuccess;
+  const bool open_scheduled_mode =
+      request.open_mode == ToolsOpenMode::kForceScheduled;
   ScheduledToolsPageState state;
-  BuildScheduledToolsPageState(server_, scheduled_sms_, draft, scheduled_message,
-                               scheduled_success, state);
+  BuildScheduledToolsPageState(server_, scheduled_sms_, request.draft,
+                               request.toast.message,
+                               page_message_success, open_scheduled_mode, state);
 
   const String scheduled_section = RenderScheduledToolsSection(state);
   const String scheduled_tasks_section = RenderScheduledTaskListSection(state);
@@ -740,22 +810,14 @@ void WebAdmin::SendToolsPage(const ScheduledTaskDraft* draft,
                    String(static_cast<long long>(state.now_utc)) +
                    "\" data-valid=\"" + String(state.clock_valid ? "1" : "0") +
                    "\">" + EscapeHtml(tools_clock_hint) + "</span>");
-  String message_toast;
-  if (state.message.length() > 0) {
-    message_toast = "<div id=\"scheduledToast\" class=\"scheduled-toast ";
-    message_toast += state.message_success ? "scheduled-toast-success" : "scheduled-toast-error";
-    message_toast += "\">";
-    message_toast += EscapeHtml(state.message);
-    message_toast += "</div>";
-  }
-  html.replace("%SCHEDULED_MESSAGE_TOAST%", message_toast);
+  ApplyPageToast(html, state.message, state.message_success);
   html.replace("%TOOLS_INITIAL_MODE%", state.scheduled_mode ? "scheduled" : "now");
   server_.send(200, "text/html", html);
 }
 
 void WebAdmin::HandleToolsPage() {
   if (!CheckAuth()) return;
-  SendToolsPage(nullptr, "", false);
+  SendToolsPage(ToolsPageRequest{});
 }
 
 // Modem tools and diagnostic endpoints.
@@ -1167,34 +1229,9 @@ void WebAdmin::HandleSendSms() {
     result_msg = success ? "短信发送成功！" : "短信发送失败，请检查模组状态";
   }
 
-  String html = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="3;url=/sms">
-  <title>发送结果</title>
-  <style>
-    body { font-family: Arial, sans-serif; text-align: center; padding-top: 100px; background: #f5f5f5; }
-    .result { padding: 20px; border-radius: 10px; display: inline-block; }
-    .success { background: #4CAF50; color: white; }
-    .error { background: #f44336; color: white; }
-  </style>
-</head>
-<body>
-  <div class="result %CLASS%">
-    <h2>%ICON% %MSG%</h2>
-    <p>3秒后返回发送页面...</p>
-  </div>
-</body>
-</html>
-)rawliteral";
-
-  html.replace("%CLASS%", success ? "success" : "error");
-  html.replace("%ICON%", success ? "✅" : "❌");
-  html.replace("%MSG%", result_msg);
-
-  server_.send(200, "text/html", html);
+  ToolsPageRequest request;
+  request.toast = BuildPageToast(result_msg, success);
+  SendToolsPage(request);
 }
 
 void WebAdmin::HandleScheduledSave() {
@@ -1242,7 +1279,11 @@ void WebAdmin::HandleScheduledSave() {
     draft.enabled = true;
     draft.repeat_unit = ScheduledIntervalUnit::Days;
   }
-  SendToolsPage(success ? nullptr : &draft, message, success);
+  ToolsPageRequest request;
+  request.draft = success ? nullptr : &draft;
+  request.toast = BuildPageToast(message, success);
+  request.open_mode = ToolsOpenMode::kForceScheduled;
+  SendToolsPage(request);
 }
 
 void WebAdmin::HandleScheduledDelete() {
@@ -1250,11 +1291,15 @@ void WebAdmin::HandleScheduledDelete() {
 
   String message;
   const uint32_t task_id = static_cast<uint32_t>(server_.arg("taskId").toInt());
+  ToolsPageRequest request;
+  request.open_mode = ToolsOpenMode::kForceScheduled;
   if (!scheduled_sms_.DeleteTask(task_id, message)) {
-    SendToolsPage(nullptr, message, false);
+    request.toast = BuildPageToast(message, false);
+    SendToolsPage(request);
     return;
   }
-  SendToolsPage(nullptr, message, true);
+  request.toast = BuildPageToast(message, true);
+  SendToolsPage(request);
 }
 
 void WebAdmin::HandleScheduledToggle() {
@@ -1263,11 +1308,15 @@ void WebAdmin::HandleScheduledToggle() {
   String message;
   const uint32_t task_id = static_cast<uint32_t>(server_.arg("taskId").toInt());
   const bool enabled = server_.arg("enabled").toInt() != 0;
+  ToolsPageRequest request;
+  request.open_mode = ToolsOpenMode::kForceScheduled;
   if (!scheduled_sms_.SetTaskEnabled(task_id, enabled, message)) {
-    SendToolsPage(nullptr, message, false);
+    request.toast = BuildPageToast(message, false);
+    SendToolsPage(request);
     return;
   }
-  SendToolsPage(nullptr, message, true);
+  request.toast = BuildPageToast(message, true);
+  SendToolsPage(request);
 }
 
 void WebAdmin::HandleScheduledRun() {
@@ -1281,7 +1330,10 @@ void WebAdmin::HandleScheduledRun() {
     success = RequestSendStoredSms(task_id, dispatch.phone, message);
     scheduled_sms_.CompleteManualRun(task_id, time(nullptr), success, message);
   }
-  SendToolsPage(nullptr, message, success);
+  ToolsPageRequest request;
+  request.toast = BuildPageToast(message, success);
+  request.open_mode = ToolsOpenMode::kForceScheduled;
+  SendToolsPage(request);
 }
 
 void WebAdmin::HandleSave() {
@@ -1333,30 +1385,7 @@ void WebAdmin::HandleSave() {
     xSemaphoreGive(shared_state_.mutex);
   }
 
-  // Save first, then show the success page so the browser only reports success
-  // after NVS has been updated.
-  const String html = R"rawliteral(
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="3;url=/">
-  <title>保存成功</title>
-  <style>
-    body { font-family: Arial, sans-serif; text-align: center; padding-top: 100px; background: #f5f5f5; }
-    .success { background: #4CAF50; color: white; padding: 20px; border-radius: 10px; display: inline-block; }
-  </style>
-</head>
-<body>
-  <div class="success">
-    <h2>✅ 配置保存成功！</h2>
-    <p>3秒后返回配置页面...</p>
-    <p>如果修改了账号密码，请使用新的账号密码登录</p>
-  </div>
-</body>
-</html>
-)rawliteral";
-  server_.send(200, "text/html", html);
+  SendAdminPage("配置保存成功！若修改了账号密码，请使用新的账号密码登录。", true);
 
   if (new_config_valid && app_event_queue_ != nullptr) {
     AppEvent event;

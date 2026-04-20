@@ -46,6 +46,28 @@ class WebAdmin {
     String message;
   };
 
+  enum class PageToastLevel : uint8_t {
+    kNone = 0,
+    kSuccess,
+    kError,
+  };
+
+  struct PageToast {
+    String message;
+    PageToastLevel level = PageToastLevel::kNone;
+  };
+
+  enum class ToolsOpenMode : uint8_t {
+    kRespectQuery = 0,
+    kForceScheduled,
+  };
+
+  struct ToolsPageRequest {
+    const ScheduledTaskDraft* draft = nullptr;
+    PageToast toast;
+    ToolsOpenMode open_mode = ToolsOpenMode::kRespectQuery;
+  };
+
   bool LoadConfigSnapshot(AppConfig& config, bool* config_valid = nullptr) const;
   bool CheckAuth();
   bool CheckProvisionAccess();
@@ -64,8 +86,9 @@ class WebAdmin {
   void CleanupPendingRequests();
   String GetDeviceUrl() const;
   String EscapeJson(const String& value) const;
-  void SendToolsPage(const ScheduledTaskDraft* draft, const String& scheduled_message,
-                     bool scheduled_success);
+  PageToast BuildPageToast(const String& message, bool success) const;
+  void SendAdminPage(const String& page_message, bool page_message_success);
+  void SendToolsPage(const ToolsPageRequest& request);
 
   void HandleRoot();
   void HandleAdminPage();

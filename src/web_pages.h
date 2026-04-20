@@ -133,9 +133,97 @@ static const char kConfigPageHtml[] = R"rawliteral(
     .push-channel-body { display: none; padding-top: 12px; }
     .push-channel.enabled .push-channel-body { display: block; }
     .push-type-hint { font-size: 12px; color: var(--text-sub); margin-top: 10px; padding: 12px; background: rgba(255,255,255,0.4); border-radius: 10px; border: 1px solid rgba(255,255,255,0.5); line-height: 1.5; }
+    
+    .page-toast {
+      position: fixed;
+      left: 50%;
+      top: 20px;
+      z-index: 9999;
+
+      width: fit-content;
+      min-width: 100px;
+      max-width: calc(100vw - 40px);
+
+      padding: 12px 24px;
+      text-align: center;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 10px;
+
+      border-radius: 14px;
+      font-size: 14px;
+      line-height: 1.4;
+      border: 1px solid rgba(255,255,255,0.7);
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.15);
+      backdrop-filter: blur(16px) saturate(120%);
+      -webkit-backdrop-filter: blur(16px) saturate(120%);
+
+      animation: toastSlideDown 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+      transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+    .page-toast-text {
+      min-width: 0;
+      word-break: break-word;
+    }
+    .page-toast-close {
+      width: 28px;
+      min-width: 28px;
+      height: 28px;
+      margin: 0;
+      padding: 0;
+      border: none;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.08);
+      color: inherit;
+      font-size: 18px;
+      line-height: 1;
+      box-shadow: none;
+      cursor: pointer;
+      flex: 0 0 28px;
+      font-weight: 400;
+    }
+    .page-toast-close:hover {
+      transform: none;
+      box-shadow: none;
+      background: rgba(15, 23, 42, 0.14);
+    }
+    @keyframes toastSlideDown {
+      0% {
+        opacity: 0;
+        transform: translate(-50%, -100%);
+      }
+      100% {
+        opacity: 1;
+        transform: translate(-50%, 0);
+      }
+    }
+    .page-toast-success {
+      background: rgba(187, 247, 208, 0.92);
+      color: #166534;
+    }
+    .page-toast-error {
+      background: rgba(254, 202, 202, 0.94);
+      color: #991b1b;
+    }
+    .page-toast-hide {
+      animation: toastSlideUp 0.3s ease forwards !important;
+    }
+    @keyframes toastSlideUp {
+      0% {
+        opacity: 1;
+        transform: translate(-50%, 0);
+      }
+      100% {
+        opacity: 0;
+        transform: translate(-50%, -30px);
+      }
+    }
   </style>
 </head>
 <body>
+  %PAGE_TOAST%
+
   <div class="container">
     <h1>短信转发器</h1>
     <div class="nav">
@@ -213,6 +301,47 @@ static const char kConfigPageHtml[] = R"rawliteral(
     </form>
   </div>
   <script>
+    
+    function dismissPageToast(toast) {
+      if (!toast || toast.dataset.hiding === '1') return;
+      toast.dataset.hiding = '1';
+      toast.classList.add('page-toast-hide');
+      setTimeout(function() {
+        if (toast && toast.parentNode) {
+          toast.parentNode.removeChild(toast);
+        }
+      }, 320);
+    }
+
+    function initPageToast() {
+      var toast = document.getElementById('pageToast');
+      if (!toast) return;
+
+      if (!toast.querySelector('.page-toast-close')) {
+        var message = toast.textContent || '';
+        toast.textContent = '';
+
+        var text = document.createElement('span');
+        text.className = 'page-toast-text';
+        text.textContent = message;
+        toast.appendChild(text);
+
+        var closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'page-toast-close';
+        closeBtn.setAttribute('aria-label', '关闭提示');
+        closeBtn.innerHTML = '&times;';
+        closeBtn.addEventListener('click', function() {
+          dismissPageToast(toast);
+        });
+        toast.appendChild(closeBtn);
+      }
+
+      setTimeout(function() {
+        dismissPageToast(toast);
+      }, 2600);
+    }
+
     function toggleChannel(idx) {
       var ch = document.getElementById('channel' + idx);
       var cb = document.getElementById('push' + idx + 'en');
@@ -307,6 +436,7 @@ static const char kConfigPageHtml[] = R"rawliteral(
       setInterval(renderClock, 10000);
     }
     document.addEventListener('DOMContentLoaded', function() {
+      initPageToast();
       for (var i = 0; i < 5; i++) {
         toggleChannel(i);
         updateTypeHint(i);
@@ -689,12 +819,13 @@ static const char kToolsPageHtml[] = R"rawliteral(
     .result-error { background: rgba(254, 202, 202, 0.6); border-left: 4px solid #ef4444; color: #991b1b; }
     .result-loading { background: rgba(254, 240, 138, 0.6); border-left: 4px solid #eab308; color: #854d0e; }
     .result-info { background: rgba(191, 219, 254, 0.6); border-left: 4px solid #3b82f6; color: #1e40af; }
-    .scheduled-toast {
+    
+    .page-toast {
       position: fixed;
       left: 50%;
       top: 20px;
       z-index: 9999;
-      
+
       width: fit-content;
       min-width: 100px;
       max-width: calc(100vw - 40px);
@@ -704,6 +835,7 @@ static const char kToolsPageHtml[] = R"rawliteral(
       display: flex;
       justify-content: center;
       align-items: center;
+      gap: 10px;
 
       border-radius: 14px;
       font-size: 14px;
@@ -711,10 +843,36 @@ static const char kToolsPageHtml[] = R"rawliteral(
       border: 1px solid rgba(255,255,255,0.7);
       box-shadow: 0 12px 32px rgba(15, 23, 42, 0.15);
       backdrop-filter: blur(16px) saturate(120%);
-      -webkit-backdrop-filter: blur(16px) saturate(120%); 
+      -webkit-backdrop-filter: blur(16px) saturate(120%);
 
       animation: toastSlideDown 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
       transition: opacity 0.3s ease, transform 0.3s ease;
+    }
+    .page-toast-text {
+      min-width: 0;
+      word-break: break-word;
+    }
+    .page-toast-close {
+      width: 28px;
+      min-width: 28px;
+      height: 28px;
+      margin: 0;
+      padding: 0;
+      border: none;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.08);
+      color: inherit;
+      font-size: 18px;
+      line-height: 1;
+      box-shadow: none;
+      cursor: pointer;
+      flex: 0 0 28px;
+      font-weight: 400;
+    }
+    .page-toast-close:hover {
+      transform: none;
+      box-shadow: none;
+      background: rgba(15, 23, 42, 0.14);
     }
     @keyframes toastSlideDown {
       0% {
@@ -726,27 +884,27 @@ static const char kToolsPageHtml[] = R"rawliteral(
         transform: translate(-50%, 0);
       }
     }
-    .scheduled-toast-success {
+    .page-toast-success {
       background: rgba(187, 247, 208, 0.92);
       color: #166534;
     }
-    .scheduled-toast-error {
+    .page-toast-error {
       background: rgba(254, 202, 202, 0.94);
       color: #991b1b;
     }
-  .scheduled-toast-hide {
+    .page-toast-hide {
       animation: toastSlideUp 0.3s ease forwards !important;
     }
-  @keyframes toastSlideUp {
-    0% {
-      opacity: 1;
-      transform: translate(-50%, 0);
+    @keyframes toastSlideUp {
+      0% {
+        opacity: 1;
+        transform: translate(-50%, 0);
+      }
+      100% {
+        opacity: 0;
+        transform: translate(-50%, -30px);
+      }
     }
-    100% {
-      opacity: 0;
-      transform: translate(-50%, -30px);
-    }
-  }
     
     #atLog { background: rgba(15, 23, 42, 0.8); color: #4ade80; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; min-height: 160px; max-height: 300px; overflow-y: auto; padding: 16px; border-radius: 14px; margin-bottom: 12px; font-size: 13px; line-height: 1.6; border: 1px solid rgba(255,255,255,0.1); word-break: break-all; white-space: pre-wrap; }
     .at-input-group { display: flex; gap: 12px; }
@@ -755,7 +913,7 @@ static const char kToolsPageHtml[] = R"rawliteral(
   </style>
 </head>
 <body>
-  %SCHEDULED_MESSAGE_TOAST%
+  %PAGE_TOAST%
 
   <div class="container">
     <h1>短信转发器</h1>
@@ -864,17 +1022,45 @@ static const char kToolsPageHtml[] = R"rawliteral(
       document.getElementById('scheduledCharCount').textContent = el.value.length;
     }
 
-    function initScheduledToast() {
-      var toast = document.getElementById('scheduledToast');
-      if (!toast) return;
-      setTimeout(function() {
-        toast.classList.add('scheduled-toast-hide');
-      }, 2600);
+    
+    function dismissPageToast(toast) {
+      if (!toast || toast.dataset.hiding === '1') return;
+      toast.dataset.hiding = '1';
+      toast.classList.add('page-toast-hide');
       setTimeout(function() {
         if (toast && toast.parentNode) {
           toast.parentNode.removeChild(toast);
         }
-      }, 3200);
+      }, 320);
+    }
+
+    function initPageToast() {
+      var toast = document.getElementById('pageToast');
+      if (!toast) return;
+
+      if (!toast.querySelector('.page-toast-close')) {
+        var message = toast.textContent || '';
+        toast.textContent = '';
+
+        var text = document.createElement('span');
+        text.className = 'page-toast-text';
+        text.textContent = message;
+        toast.appendChild(text);
+
+        var closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'page-toast-close';
+        closeBtn.setAttribute('aria-label', '关闭提示');
+        closeBtn.innerHTML = '&times;';
+        closeBtn.addEventListener('click', function() {
+          dismissPageToast(toast);
+        });
+        toast.appendChild(closeBtn);
+      }
+
+      setTimeout(function() {
+        dismissPageToast(toast);
+      }, 2600);
     }
 
     function formatScheduledClock(epochSeconds, clockValid) {
@@ -979,6 +1165,7 @@ static const char kToolsPageHtml[] = R"rawliteral(
     }
 
     document.addEventListener('DOMContentLoaded', function() {
+      initPageToast();
       var body = document.getElementById('scheduledBody');
       if (body) updateScheduledCount(body);
       var firstRunAt = document.getElementById('scheduledFirstRunAt');
@@ -989,7 +1176,6 @@ static const char kToolsPageHtml[] = R"rawliteral(
       toggleRepeatSettings();
       toggleEndPolicy();
       startScheduledClock();
-      initScheduledToast();
     });
     
     function queryInfo(type) {
@@ -1170,3 +1356,4 @@ static const char kToolsPageHtml[] = R"rawliteral(
 </body>
 </html>
 )rawliteral";
+
