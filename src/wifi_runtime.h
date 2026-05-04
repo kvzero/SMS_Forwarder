@@ -179,7 +179,7 @@ class WifiRuntime {
   };
 
   bool LoadConfigSnapshot(AppConfig& config) const;
-  void SaveConfigSnapshot(const AppConfig& config);
+  bool SaveConfigSnapshot(const AppConfig& config);
   void CancelConnectAttempt(bool disconnect_sta);
 
   void ResetSavedAttemptQueue();

@@ -424,10 +424,10 @@ static const char kProvisionPageHtml[] = R"rawliteral(
       var statusBox = document.getElementById('statusBox');
       var lines = [];
       lines.push('状态：' + modeText(data.mode));
-      if (data.message) lines.push(data.message);
-      if (data.portalActive) lines.push('设备热点：' + data.apSsid + '（' + data.apIp + '）');
-      if (data.connectInProgress && data.attemptingSsid) lines.push('当前尝试：' + data.attemptingSsid);
-      if (data.staConnected) lines.push('当前联网：' + data.staSsid + '（' + data.staIp + '）');
+      if (data.message) lines.push(escapeHtml(data.message));
+      if (data.portalActive) lines.push('设备热点：' + escapeHtml(data.apSsid) + '（' + escapeHtml(data.apIp) + '）');
+      if (data.connectInProgress && data.attemptingSsid) lines.push('当前尝试：' + escapeHtml(data.attemptingSsid));
+      if (data.staConnected) lines.push('当前联网：' + escapeHtml(data.staSsid) + '（' + escapeHtml(data.staIp) + '）');
 
       statusBox.className = 'status-box';
       statusBox.innerHTML = lines.join('<br>');
@@ -436,9 +436,10 @@ static const char kProvisionPageHtml[] = R"rawliteral(
 
       var handoffBox = document.getElementById('handoffBox');
       if (data.mode === 'handoff') {
+        var connectedSsid = escapeHtml(data.staSsid || '');
         handoffBox.style.display = 'block';
         handoffBox.innerHTML =
-          '设备已连接到 <b>' + data.staSsid + '</b>，请将手机切回该局域网 Wi-Fi。' +
+          '设备已连接到 <b>' + connectedSsid + '</b>，请将手机切回该局域网 Wi-Fi。' +
           '<br>新的设备地址：<a class="link" href="http://' + data.redirectIp + '/">http://' + data.redirectIp + '/</a>' +
           '<br>热点将在 ' + data.handoffRemainingSec + ' 秒后自动关闭。';
       } else {
@@ -504,6 +505,15 @@ static const char kProvisionPageHtml[] = R"rawliteral(
       return '信号较弱';
     }
 
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
     function renderNetworks(items) {
       var list = document.getElementById('networkList');
       list.innerHTML = '';
@@ -521,6 +531,7 @@ static const char kProvisionPageHtml[] = R"rawliteral(
         var badges = '';
         if (item.current) badges += '<span class="badge">当前网络</span>';
         if (item.saved) badges += '<span class="badge">已保存</span>';
+        var displaySsid = escapeHtml(item.ssid);
 
         var meta = 'RSSI ' + item.rssi + ' dBm，' + signalText(item.rssi);
         meta += item.secured ? '，需要密码' : '，开放网络';
@@ -529,7 +540,7 @@ static const char kProvisionPageHtml[] = R"rawliteral(
         row.className = 'network-item';
         row.innerHTML =
           '<div class="network-meta">' +
-            '<div class="network-name">' + item.ssid + badges + '</div>' +
+            '<div class="network-name">' + displaySsid + badges + '</div>' +
             '<div class="network-extra">' + meta + '</div>' +
           '</div>' +
           '<div class="actions">' +
@@ -558,11 +569,12 @@ static const char kProvisionPageHtml[] = R"rawliteral(
       }
 
       items.forEach(function(item) {
+        var displaySsid = escapeHtml(item.ssid);
         var row = document.createElement('div');
         row.className = 'credential-item';
         row.innerHTML =
           '<div class="credential-meta">' +
-            '<div class="credential-name">' + item.ssid +
+            '<div class="credential-name">' + displaySsid +
               (item.current ? '<span class="badge">当前网络</span>' : '') +
             '</div>' +
             '<div class="credential-extra">设备会优先尝试列表靠前的网络</div>' +

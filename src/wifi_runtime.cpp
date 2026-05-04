@@ -193,6 +193,11 @@ bool WifiRuntime::SubmitCredential(const String& raw_ssid, const String& passwor
 
   ResetStartupDiscovery();
   ResetSavedAttemptQueue();
+  if (scan_cycle_.active || visible_networks_.scanInProgress) {
+    WiFi.scanDelete();
+  }
+  ResetScanCycle();
+  visible_networks_.scanInProgress = false;
   EnsurePortalStarted();
   StartConnectAttempt(ssid, password);
   message = "已开始连接 " + ssid + "，请稍候。";
@@ -224,7 +229,10 @@ bool WifiRuntime::DeleteCredential(const String& raw_ssid, String& message) {
   const bool removed_connected_ssid =
       WiFi.status() == WL_CONNECTED && WiFi.SSID() == ssid;
 
-  SaveConfigSnapshot(config);
+  if (!SaveConfigSnapshot(config)) {
+    message = "删除网络失败，配置写入失败，请稍后重试。";
+    return false;
+  }
 
   if (removed_active_candidate) {
     CancelConnectAttempt(true);
@@ -256,7 +264,14 @@ bool WifiRuntime::ClearCredentials(String& message) {
   }
 
   if (config_store_.ClearWifiCredentials(config)) {
-    SaveConfigSnapshot(config);
+    if (!SaveConfigSnapshot(config)) {
+      message = "清空网络失败，配置写入失败，请稍后重试。";
+      return false;
+    }
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    WiFi.disconnect(false, false);
+    delay(50);
   }
   CancelConnectAttempt(true);
   EnterProvisioningPortal("已清空所有已保存网络。", millis(), kSavedRetryIntervalMs);
@@ -278,15 +293,18 @@ bool WifiRuntime::LoadConfigSnapshot(AppConfig& config) const {
   return true;
 }
 
-void WifiRuntime::SaveConfigSnapshot(const AppConfig& config) {
-  if (!config_store_.Save(config)) return;
+bool WifiRuntime::SaveConfigSnapshot(const AppConfig& config) {
+  if (!config_store_.Save(config)) return false;
 
   if (shared_state_.mutex != nullptr &&
       xSemaphoreTake(shared_state_.mutex, portMAX_DELAY) == pdTRUE) {
     shared_state_.config = config;
     shared_state_.configValid = IsConfigValid(config);
     xSemaphoreGive(shared_state_.mutex);
+    return true;
   }
+
+  return false;
 }
 
 void WifiRuntime::CancelConnectAttempt(bool disconnect_sta) {
@@ -493,13 +511,17 @@ void WifiRuntime::HandleConnectAttempt(unsigned long now) {
 
   const wl_status_t status = WiFi.status();
   if (status == WL_CONNECTED) {
+    bool credential_save_failed = false;
     AppConfig config;
     if (LoadConfigSnapshot(config)) {
       const bool credentials_changed =
           config_store_.UpsertWifiCredential(config, active_candidate_.ssid,
                                              active_candidate_.password);
       if (credentials_changed) {
-        SaveConfigSnapshot(config);
+        if (!SaveConfigSnapshot(config)) {
+          credential_save_failed = true;
+          Serial.println("Failed to save Wi-Fi credential after connect");
+        }
       }
     }
 
@@ -507,7 +529,10 @@ void WifiRuntime::HandleConnectAttempt(unsigned long now) {
     ResetStartupDiscovery();
     ResetSavedAttemptQueue();
     next_saved_retry_ms_ = 0;
-    status_message_ = "已连接到 " + active_candidate_.ssid + "。";
+    status_message_ = credential_save_failed
+                          ? "已连接到 " + active_candidate_.ssid +
+                                "，但保存 Wi-Fi 凭据失败。"
+                          : "已连接到 " + active_candidate_.ssid + "。";
     Serial.println("Wi-Fi connected: " + active_candidate_.ssid);
     active_candidate_ = PendingCredential{};
     StartNtpSync();
