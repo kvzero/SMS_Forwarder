@@ -15,7 +15,7 @@ namespace {
 
 constexpr TickType_t kWebSyncPollSlice = pdMS_TO_TICKS(50);
 constexpr unsigned long kPendingRequestLifetimeMs = 60000;
-constexpr TickType_t kSendSmsWaitTicks = pdMS_TO_TICKS(40000);
+constexpr TickType_t kSendSmsWaitTicks = pdMS_TO_TICKS(kSmsSendRequestWaitMs);
 constexpr size_t kConfigTemplateReplaceHeadroom = 2048;
 constexpr size_t kToolsTemplateReplaceHeadroom = 512;
 constexpr const char* kPageToastToken = "%PAGE_TOAST%";
@@ -137,9 +137,14 @@ String FormatTimeLabel(time_t utc) {
   return String(buffer);
 }
 
-String RepeatSummary(const ScheduledTaskRecord& task) {
+String ScheduleRuleSummary(const ScheduledTaskRecord& task) {
+  String summary = "首次 ";
+  summary += FormatTimeLabel(task.first_run_utc);
+  summary += "；";
+
   if (!task.repeat_enabled) {
-    return "仅发送一次";
+    summary += "仅发送一次";
+    return summary;
   }
 
   String unit;
@@ -161,7 +166,7 @@ String RepeatSummary(const ScheduledTaskRecord& task) {
       break;
   }
 
-  String summary = "每";
+  summary += "每";
   summary += String(task.repeat_every);
   summary += unit;
   summary += "，";
@@ -249,8 +254,8 @@ String BuildScheduledTaskListHtml(const ScheduledTaskRecord* tasks, size_t task_
             EscapeHtml(task.preview) + "</div>";
     html += "<div class=\"task-meta\"><strong>下次执行：</strong>" +
             EscapeHtml(FormatTimeLabel(task.next_run_utc)) + "</div>";
-    html += "<div class=\"task-meta\"><strong>重复规则：</strong>" +
-            EscapeHtml(RepeatSummary(task)) + "</div>";
+    html += "<div class=\"task-meta\"><strong>规则：</strong>" +
+            EscapeHtml(ScheduleRuleSummary(task)) + "</div>";
     if (task.last_result.length() > 0) {
       html += "<div class=\"task-meta\"><strong>最近结果：</strong>" +
               EscapeHtml(task.last_result) + "</div>";
@@ -495,14 +500,14 @@ bool WebAdmin::RequestSendSms(const String& phone, const String& content) {
   return response.success;
 }
 
-bool WebAdmin::RequestSendStoredSms(uint32_t task_id, const String& phone,
-                                    String& response_message) {
+bool WebAdmin::RequestSendScheduledSms(const ScheduledTaskDispatch& dispatch,
+                                       String& response_message) {
   ModemRequest request;
   request.requestId = AllocateRequestId();
   request.requester = ModemRequester::Web;
-  request.type = ModemRequestType::SendStoredSms;
-  request.storedTaskId = task_id;
-  CopyString(request.phone, phone);
+  request.type = ModemRequestType::SendSms;
+  CopyString(request.phone, dispatch.phone);
+  CopyString(request.text, dispatch.body);
 
   if (!SubmitModemRequest(request)) {
     response_message = "无法提交定时短信发送请求。";
@@ -1327,7 +1332,7 @@ void WebAdmin::HandleScheduledRun() {
   String message;
   bool success = scheduled_sms_.PrepareManualRun(task_id, dispatch, message);
   if (success) {
-    success = RequestSendStoredSms(task_id, dispatch.phone, message);
+    success = RequestSendScheduledSms(dispatch, message);
     scheduled_sms_.CompleteManualRun(task_id, time(nullptr), success, message);
   }
   ToolsPageRequest request;

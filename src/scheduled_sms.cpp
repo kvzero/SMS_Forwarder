@@ -15,6 +15,11 @@
 namespace {
 
 constexpr time_t kClockValidThreshold = 100000;
+constexpr time_t kScheduledLateGraceSeconds = 120;
+constexpr const char* kScheduledLateSkipResult = "定时任务已逾期，未补发。";
+constexpr const char* kScheduledEndedResult = "定时任务已结束。";
+constexpr const char* kScheduledTaskRunningMessage =
+    "定时任务正在执行，请稍后再试。";
 
 bool IsClockValid(time_t now_utc) {
   return now_utc >= kClockValidThreshold;
@@ -69,6 +74,58 @@ time_t AddIntervalUtc(time_t base_utc, uint32_t every, ScheduledIntervalUnit uni
   }
 
   return base_utc;
+}
+
+bool FixedIntervalSeconds(uint32_t every, ScheduledIntervalUnit unit,
+                          time_t& seconds) {
+  if (every == 0) {
+    return false;
+  }
+
+  switch (unit) {
+    case ScheduledIntervalUnit::Minutes:
+      seconds = static_cast<time_t>(every) * 60;
+      return true;
+    case ScheduledIntervalUnit::Hours:
+      seconds = static_cast<time_t>(every) * 60 * 60;
+      return true;
+    case ScheduledIntervalUnit::Days:
+      seconds = static_cast<time_t>(every) * 60 * 60 * 24;
+      return true;
+    case ScheduledIntervalUnit::Weeks:
+      seconds = static_cast<time_t>(every) * 60 * 60 * 24 * 7;
+      return true;
+    case ScheduledIntervalUnit::Months:
+      return false;
+  }
+
+  return false;
+}
+
+bool HasScheduleDefinitionChanged(const ScheduledTaskRecord& before,
+                                  const ScheduledTaskRecord& after) {
+  return before.first_run_utc != after.first_run_utc ||
+         before.repeat_enabled != after.repeat_enabled ||
+         before.repeat_every != after.repeat_every ||
+         before.repeat_unit != after.repeat_unit ||
+         before.end_policy != after.end_policy ||
+         before.end_at_utc != after.end_at_utc ||
+         before.max_runs != after.max_runs;
+}
+
+bool ShouldResetRunHistoryOnEdit(const ScheduledTaskRecord& before,
+                                 const ScheduledTaskRecord& after) {
+  if (!after.repeat_enabled) {
+    return true;
+  }
+  return HasScheduleDefinitionChanged(before, after);
+}
+
+void ResetRunHistory(ScheduledTaskRecord& task) {
+  task.run_count = 0;
+  task.last_run_utc = 0;
+  task.last_run_success = false;
+  task.last_result = "";
 }
 
 }  // namespace
@@ -171,6 +228,11 @@ bool ScheduledSms::UpsertTask(const ScheduledTaskDraft& draft, String& message,
     message = "未找到要更新的定时任务。";
     return false;
   }
+  if (existing_index >= 0 && dispatching_[existing_index]) {
+    xSemaphoreGive(mutex_);
+    message = kScheduledTaskRunningMessage;
+    return false;
+  }
   if (existing_index < 0 && task_count_ >= kMaxScheduledTasks) {
     xSemaphoreGive(mutex_);
     message = "定时任务数量已达上限。";
@@ -213,6 +275,11 @@ bool ScheduledSms::DeleteTask(uint32_t task_id, String& message) {
     message = "未找到定时任务。";
     return false;
   }
+  if (dispatching_[index]) {
+    xSemaphoreGive(mutex_);
+    message = kScheduledTaskRunningMessage;
+    return false;
+  }
 
   if (!store_.DeleteTask(task_id, message)) {
     xSemaphoreGive(mutex_);
@@ -246,16 +313,24 @@ bool ScheduledSms::SetTaskEnabled(uint32_t task_id, bool enabled, String& messag
     message = "未找到定时任务。";
     return false;
   }
+  if (dispatching_[index]) {
+    xSemaphoreGive(mutex_);
+    message = kScheduledTaskRunningMessage;
+    return false;
+  }
 
   ScheduledTaskRecord updated = tasks_[index];
   updated.enabled = enabled;
   if (!enabled) {
     updated.next_run_utc = 0;
-  } else if (updated.repeat_enabled) {
-    const time_t now_utc = time(nullptr);
-    updated.next_run_utc = ComputeNextRunAfterLocked(updated, now_utc);
   } else {
-    updated.next_run_utc = updated.run_count == 0 ? updated.first_run_utc : 0;
+    const time_t now_utc = time(nullptr);
+    updated.next_run_utc = ComputeInitialNextRunUtcLocked(updated, now_utc);
+    if (updated.next_run_utc == 0) {
+      xSemaphoreGive(mutex_);
+      message = "定时任务已结束，请编辑后保存。";
+      return false;
+    }
   }
 
   if (!store_.StoreTaskRecord(updated, message)) {
@@ -285,7 +360,7 @@ bool ScheduledSms::PrepareManualRun(uint32_t task_id, ScheduledTaskDispatch& dis
   }
   if (dispatching_[index]) {
     xSemaphoreGive(mutex_);
-    message = "定时任务正在执行，请稍后再试。";
+    message = kScheduledTaskRunningMessage;
     return false;
   }
 
@@ -293,6 +368,11 @@ bool ScheduledSms::PrepareManualRun(uint32_t task_id, ScheduledTaskDispatch& dis
   dispatch.task_id = tasks_[index].id;
   dispatch.phone = tasks_[index].phone;
   xSemaphoreGive(mutex_);
+
+  if (!PopulateDispatchBody(task_id, false, dispatch, message)) {
+    return false;
+  }
+
   message = "";
   return true;
 }
@@ -306,9 +386,17 @@ void ScheduledSms::CompleteManualRun(uint32_t task_id, time_t executed_at, bool 
   const int index = FindTaskIndexLocked(task_id);
   if (index >= 0) {
     dispatching_[index] = false;
-    FinishRunLocked(tasks_[index], false, executed_at, success, result_message);
+    const bool consumes_due_run =
+        tasks_[index].enabled && tasks_[index].next_run_utc != 0 &&
+        tasks_[index].next_run_utc <= executed_at &&
+        !IsTaskLateLocked(tasks_[index], executed_at);
+    FinishRunLocked(tasks_[index], consumes_due_run, executed_at, success,
+                    result_message);
     String ignored_message;
     store_.StoreTaskRecord(tasks_[index], ignored_message);
+    if (consumes_due_run) {
+      SortTasksLocked();
+    }
   }
 
   xSemaphoreGive(mutex_);
@@ -325,10 +413,39 @@ bool ScheduledSms::PrepareDueRun(time_t now_utc, ScheduledTaskDispatch& dispatch
 
   int selected_index = -1;
   time_t selected_next_run = 0;
+  bool updated_task_state = false;
+  for (size_t index = 0; index < task_count_; ++index) {
+    ScheduledTaskRecord& task = tasks_[index];
+    if (!task.enabled || dispatching_[index]) {
+      continue;
+    }
+
+    if (HasNoScheduledRunLocked(task)) {
+      EndTaskLocked(task, kScheduledEndedResult);
+      String ignored_message;
+      store_.StoreTaskRecord(task, ignored_message);
+      updated_task_state = true;
+      continue;
+    }
+
+    if (!IsTaskLateLocked(task, now_utc)) {
+      continue;
+    }
+
+    SkipLateRunLocked(task, now_utc);
+    String ignored_message;
+    store_.StoreTaskRecord(task, ignored_message);
+    updated_task_state = true;
+  }
+
+  if (updated_task_state) {
+    SortTasksLocked();
+  }
+
   for (size_t index = 0; index < task_count_; ++index) {
     const ScheduledTaskRecord& task = tasks_[index];
     if (!task.enabled || dispatching_[index] || task.next_run_utc == 0 ||
-        task.next_run_utc > now_utc) {
+        task.next_run_utc > now_utc || IsTaskLateLocked(task, now_utc)) {
       continue;
     }
     if (selected_index < 0 || task.next_run_utc < selected_next_run) {
@@ -346,6 +463,12 @@ bool ScheduledSms::PrepareDueRun(time_t now_utc, ScheduledTaskDispatch& dispatch
   dispatch.task_id = tasks_[selected_index].id;
   dispatch.phone = tasks_[selected_index].phone;
   xSemaphoreGive(mutex_);
+
+  String load_message;
+  if (!PopulateDispatchBody(dispatch.task_id, true, dispatch, load_message)) {
+    return false;
+  }
+
   return true;
 }
 
@@ -365,26 +488,6 @@ void ScheduledSms::CompleteDueRun(uint32_t task_id, time_t executed_at, bool suc
   }
 
   xSemaphoreGive(mutex_);
-}
-
-time_t ScheduledSms::GetNextDueUtc() const {
-  if (xSemaphoreTake(mutex_, portMAX_DELAY) != pdTRUE) {
-    return 0;
-  }
-
-  time_t next_due_utc = 0;
-  for (size_t index = 0; index < task_count_; ++index) {
-    const ScheduledTaskRecord& task = tasks_[index];
-    if (!task.enabled || task.next_run_utc == 0 || dispatching_[index]) {
-      continue;
-    }
-    if (next_due_utc == 0 || task.next_run_utc < next_due_utc) {
-      next_due_utc = task.next_run_utc;
-    }
-  }
-
-  xSemaphoreGive(mutex_);
-  return next_due_utc;
 }
 
 int ScheduledSms::FindTaskIndexLocked(uint32_t task_id) const {
@@ -460,40 +563,39 @@ ScheduledTaskRecord ScheduledSms::BuildRecordLocked(
   record.max_runs =
       record.end_policy == ScheduledEndPolicy::AfterRuns ? draft.max_runs : 0;
 
-  if (existing == nullptr) {
-    record.run_count = 0;
-    record.last_run_utc = 0;
-    record.last_run_success = false;
-    record.last_result = "";
+  const bool reset_run_history =
+      existing == nullptr || ShouldResetRunHistoryOnEdit(*existing, record);
+  if (reset_run_history) {
+    ResetRunHistory(record);
   }
 
   if (!record.enabled) {
     record.next_run_utc = 0;
+  } else if (existing != nullptr && !reset_run_history && existing->enabled) {
+    record.next_run_utc = existing->next_run_utc;
+    if (record.next_run_utc == 0) {
+      record.enabled = false;
+    }
   } else {
-    record.next_run_utc = ComputeInitialNextRunUtcLocked(draft, now_utc);
+    record.next_run_utc = ComputeInitialNextRunUtcLocked(record, now_utc);
+    if (record.next_run_utc == 0) {
+      record.enabled = false;
+    }
   }
   return record;
 }
 
-time_t ScheduledSms::ComputeInitialNextRunUtcLocked(const ScheduledTaskDraft& draft,
+time_t ScheduledSms::ComputeInitialNextRunUtcLocked(const ScheduledTaskRecord& task,
                                                     time_t now_utc) const {
-  if (!draft.repeat_enabled) {
-    return draft.first_run_utc;
+  if (!task.repeat_enabled) {
+    return task.run_count == 0 ? task.first_run_utc : 0;
   }
 
   if (!IsClockValid(now_utc)) {
-    return draft.first_run_utc;
+    return HasReachedEndLocked(task, task.first_run_utc) ? 0 : task.first_run_utc;
   }
 
-  time_t candidate = draft.first_run_utc;
-  while (candidate != 0 && candidate <= now_utc) {
-    candidate = AddIntervalUtc(candidate, draft.repeat_every, draft.repeat_unit);
-    if (draft.end_policy == ScheduledEndPolicy::OnDate && draft.end_at_utc > 0 &&
-        candidate > draft.end_at_utc) {
-      return 0;
-    }
-  }
-  return candidate;
+  return ComputeNextRunAfterLocked(task, now_utc);
 }
 
 time_t ScheduledSms::ComputeNextRunAfterLocked(const ScheduledTaskRecord& task,
@@ -503,17 +605,28 @@ time_t ScheduledSms::ComputeNextRunAfterLocked(const ScheduledTaskRecord& task,
   }
 
   time_t candidate = task.first_run_utc;
+  time_t fixed_interval_seconds = 0;
+  if (candidate != 0 && candidate <= after_utc &&
+      FixedIntervalSeconds(task.repeat_every, task.repeat_unit,
+                           fixed_interval_seconds) &&
+      fixed_interval_seconds > 0) {
+    const time_t elapsed = after_utc - candidate;
+    const time_t intervals_to_skip = elapsed / fixed_interval_seconds + 1;
+    candidate += intervals_to_skip * fixed_interval_seconds;
+  }
+
   while (candidate != 0 && candidate <= after_utc) {
     candidate = AddIntervalUtc(candidate, task.repeat_every, task.repeat_unit);
-    if (HasReachedEndLocked(task, candidate)) {
-      return 0;
-    }
+  }
+
+  if (HasReachedEndLocked(task, candidate)) {
+    return 0;
   }
   return candidate;
 }
 
 bool ScheduledSms::HasReachedEndLocked(const ScheduledTaskRecord& task,
-                                       time_t candidate_utc) const {
+                                        time_t candidate_utc) const {
   if (candidate_utc == 0) {
     return true;
   }
@@ -525,6 +638,77 @@ bool ScheduledSms::HasReachedEndLocked(const ScheduledTaskRecord& task,
       task.run_count >= task.max_runs) {
     return true;
   }
+  return false;
+}
+
+bool ScheduledSms::HasNoScheduledRunLocked(const ScheduledTaskRecord& task) const {
+  return task.next_run_utc == 0 || HasReachedEndLocked(task, task.next_run_utc);
+}
+
+void ScheduledSms::EndTaskLocked(ScheduledTaskRecord& task,
+                                 const String& result_message) {
+  task.enabled = false;
+  task.next_run_utc = 0;
+  if (result_message.length() > 0) {
+    task.last_result = result_message;
+    task.last_run_success = false;
+  }
+}
+
+bool ScheduledSms::IsTaskLateLocked(const ScheduledTaskRecord& task,
+                                    time_t now_utc) const {
+  if (task.next_run_utc <= 0 || task.next_run_utc > now_utc) {
+    return false;
+  }
+  return now_utc - task.next_run_utc > kScheduledLateGraceSeconds;
+}
+
+void ScheduledSms::SkipLateRunLocked(ScheduledTaskRecord& task, time_t now_utc) {
+  task.last_run_success = false;
+  task.last_result = kScheduledLateSkipResult;
+
+  if (!task.repeat_enabled) {
+    EndTaskLocked(task, "");
+    return;
+  }
+
+  task.next_run_utc = ComputeNextRunAfterLocked(task, now_utc);
+  if (task.next_run_utc == 0) {
+    EndTaskLocked(task, "");
+  }
+}
+
+bool ScheduledSms::PopulateDispatchBody(uint32_t task_id,
+                                        bool count_run_on_failure,
+                                        ScheduledTaskDispatch& dispatch,
+                                        String& message) {
+  if (store_.LoadTaskBody(task_id, dispatch.body, message) &&
+      dispatch.body.length() > 0 &&
+      dispatch.body.length() <= kMaxOutboundSmsUtf8Bytes) {
+    return true;
+  }
+
+  if (message.length() == 0) {
+    message = dispatch.body.length() == 0 ? "定时任务短信内容为空。"
+                                          : "定时任务短信内容超过当前支持上限。";
+  }
+
+  if (xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE) {
+    const int index = FindTaskIndexLocked(task_id);
+    if (index >= 0) {
+      dispatching_[index] = false;
+      FinishRunLocked(tasks_[index], count_run_on_failure, time(nullptr), false,
+                      message);
+      String ignored_message;
+      store_.StoreTaskRecord(tasks_[index], ignored_message);
+      if (count_run_on_failure) {
+        SortTasksLocked();
+      }
+    }
+    xSemaphoreGive(mutex_);
+  }
+
+  dispatch = ScheduledTaskDispatch{};
   return false;
 }
 

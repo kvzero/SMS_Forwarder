@@ -339,7 +339,7 @@ bool Modem::SendSms(const char* phone_number, const char* message) {
       Serial.printf("Multipart SMS send failed at part %u/%u\n", index + 1, part_count);
       return false;
     }
-    vTaskDelay(pdMS_TO_TICKS(300));
+    vTaskDelay(pdMS_TO_TICKS(kSmsMultipartInterPartDelayMs));
   }
 
   return true;
@@ -435,7 +435,7 @@ bool Modem::SendEncodedPdu(PDU& encoder, int pdu_length) {
 
   unsigned long start = millis();
   bool got_prompt = false;
-  while (millis() - start < 5000) {
+  while (millis() - start < kSmsSendPromptTimeoutMs) {
     if (!serial_.available()) {
       continue;
     }
@@ -458,7 +458,7 @@ bool Modem::SendEncodedPdu(PDU& encoder, int pdu_length) {
 
   start = millis();
   String response;
-  while (millis() - start < 30000) {
+  while (millis() - start < kSmsSendResultTimeoutMs) {
     while (serial_.available()) {
       const char c = serial_.read();
       response += c;

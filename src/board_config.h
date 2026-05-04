@@ -29,5 +29,14 @@ constexpr size_t kMaxInboundSmsUtf8Bytes =
 constexpr size_t kMaxOutboundSmsUtf8Bytes =
     static_cast<size_t>(kMaxOutboundSmsParts) * kSmsConcatPartUtf8MaxBytes;
 
+constexpr unsigned long kSmsSendPromptTimeoutMs = 5000;
+constexpr unsigned long kSmsSendResultTimeoutMs = 30000;
+constexpr unsigned long kSmsMultipartInterPartDelayMs = 300;
+constexpr unsigned long kSmsSendRequestSlackMs = 10000;
+constexpr unsigned long kSmsSendRequestWaitMs =
+    (kSmsSendPromptTimeoutMs + kSmsSendResultTimeoutMs) * kMaxOutboundSmsParts +
+    kSmsMultipartInterPartDelayMs * (kMaxOutboundSmsParts - 1) +
+    kSmsSendRequestSlackMs;
+
 constexpr unsigned long kConcatTimeoutMs = 30000;  ///< Long-SMS wait timeout in milliseconds.
 constexpr int kMaxConcatMessages = 5;              ///< Number of long-SMS groups cached at once.

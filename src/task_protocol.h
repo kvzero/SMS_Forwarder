@@ -35,7 +35,6 @@ enum class ModemRequester : uint8_t {
 enum class ModemRequestType : uint8_t {
   SendAtCommand,
   SendSms,
-  SendStoredSms,
   Reset,
 };
 
@@ -59,7 +58,6 @@ struct ModemRequest {
   ModemRequester requester = ModemRequester::Web;
   ModemRequestType type = ModemRequestType::SendAtCommand;
   uint32_t timeoutMs = 0;
-  uint32_t storedTaskId = 0;
   char command[kTaskCommandCapacity] = {0};
   char phone[kTaskPhoneCapacity] = {0};
   char text[kTaskOutgoingTextCapacity] = {0};

@@ -77,7 +77,8 @@ class WebAdmin {
                             TickType_t timeout_ticks);
   bool RequestAtCommand(const String& cmd, unsigned long timeout_ms, String& response);
   bool RequestSendSms(const String& phone, const String& content);
-  bool RequestSendStoredSms(uint32_t task_id, const String& phone, String& response_message);
+  bool RequestSendScheduledSms(const ScheduledTaskDispatch& dispatch,
+                               String& response_message);
   uint32_t StartAsyncAtCommand(const String& cmd, unsigned long timeout_ms);
   uint32_t AllocateRequestId();
   void DrainModemResponses();

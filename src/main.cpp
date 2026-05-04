@@ -27,7 +27,6 @@ namespace {
 constexpr uint32_t kStartupDelayMs = 1500;
 constexpr uint32_t kLoopSleepMs = 100;
 constexpr uint32_t kTaskIdleDelayMs = 10;
-constexpr uint32_t kSendSmsWaitMs = 40000;
 constexpr uint32_t kProvisionButtonHoldMs = 3000;
 constexpr uint32_t kLedRefreshMs = 100;
 constexpr uint32_t kModemTaskStackBytes = 8192;
@@ -248,7 +247,7 @@ void HandleInboxAction(const InboxAction& action, Notifier& notifier,
       if (SubmitModemRequest(request, pdMS_TO_TICKS(1000))) {
         ModemResponse response;
         success = WaitForAppModemResponse(request.requestId, response,
-                                          pdMS_TO_TICKS(kSendSmsWaitMs)) &&
+                                          pdMS_TO_TICKS(kSmsSendRequestWaitMs)) &&
                   response.success;
       }
 
@@ -322,21 +321,6 @@ void ProcessModemRequest(Modem& modem, const ModemRequest& request) {
       response.success = modem.SendSms(request.phone, request.text);
       CopyCString(response.message,
                   response.success ? "SMS send completed." : "SMS send failed.");
-      break;
-    }
-
-    case ModemRequestType::SendStoredSms: {
-      String body;
-      String load_message;
-      if (!scheduled_store.LoadTaskBody(request.storedTaskId, body, load_message)) {
-        response.success = false;
-        CopyString(response.message, load_message);
-        break;
-      }
-
-      response.success = modem.SendSms(request.phone, body.c_str());
-      CopyCString(response.message, response.success ? "Stored SMS send completed."
-                                                     : "Stored SMS send failed.");
       break;
     }
 
@@ -419,24 +403,25 @@ void AppTaskMain(void*) {
       ModemRequest request;
       request.requestId = next_request_id++;
       request.requester = ModemRequester::App;
-      request.type = ModemRequestType::SendStoredSms;
-      request.storedTaskId = dispatch.task_id;
+      request.type = ModemRequestType::SendSms;
       CopyString(request.phone, dispatch.phone);
+      CopyString(request.text, dispatch.body);
 
       bool success = false;
-      String result_message = "Failed to queue stored SMS request.";
+      String result_message = "Failed to queue scheduled SMS request.";
       if (SubmitModemRequest(request, pdMS_TO_TICKS(1000))) {
         ModemResponse response;
         if (WaitForAppModemResponse(request.requestId, response,
-                                    pdMS_TO_TICKS(kSendSmsWaitMs))) {
+                                    pdMS_TO_TICKS(kSmsSendRequestWaitMs))) {
           success = response.success;
           result_message = response.message;
         } else {
-          result_message = "Stored SMS send timed out.";
+          result_message = "Scheduled SMS send timed out.";
         }
       }
 
-      scheduled_sms.CompleteDueRun(dispatch.task_id, now_utc, success, result_message);
+      scheduled_sms.CompleteDueRun(dispatch.task_id, time(nullptr), success,
+                                   result_message);
     }
   }
 }

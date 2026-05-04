@@ -67,6 +67,7 @@ struct ScheduledTaskDraft {
 struct ScheduledTaskDispatch {
   uint32_t task_id = 0;
   String phone;
+  String body;
 };
 
 class ScheduledSms {
@@ -90,18 +91,23 @@ class ScheduledSms {
   bool PrepareDueRun(time_t now_utc, ScheduledTaskDispatch& dispatch);
   void CompleteDueRun(uint32_t task_id, time_t executed_at, bool success,
                       const String& result_message);
-  time_t GetNextDueUtc() const;
 
  private:
   int FindTaskIndexLocked(uint32_t task_id) const;
   bool ValidateDraftLocked(const ScheduledTaskDraft& draft, String& message) const;
   ScheduledTaskRecord BuildRecordLocked(const ScheduledTaskDraft& draft,
                                         const ScheduledTaskRecord* existing) const;
-  time_t ComputeInitialNextRunUtcLocked(const ScheduledTaskDraft& draft,
+  time_t ComputeInitialNextRunUtcLocked(const ScheduledTaskRecord& task,
                                         time_t now_utc) const;
   time_t ComputeNextRunAfterLocked(const ScheduledTaskRecord& task,
                                    time_t after_utc) const;
   bool HasReachedEndLocked(const ScheduledTaskRecord& task, time_t candidate_utc) const;
+  bool HasNoScheduledRunLocked(const ScheduledTaskRecord& task) const;
+  void EndTaskLocked(ScheduledTaskRecord& task, const String& result_message);
+  bool IsTaskLateLocked(const ScheduledTaskRecord& task, time_t now_utc) const;
+  void SkipLateRunLocked(ScheduledTaskRecord& task, time_t now_utc);
+  bool PopulateDispatchBody(uint32_t task_id, bool count_run_on_failure,
+                            ScheduledTaskDispatch& dispatch, String& message);
   String BuildPreviewLocked(const String& body) const;
   void SortTasksLocked();
   void FinishRunLocked(ScheduledTaskRecord& task, bool count_run, time_t executed_at,
